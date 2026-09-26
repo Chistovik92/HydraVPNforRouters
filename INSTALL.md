@@ -5,6 +5,28 @@
 
 ---
 
+## Репозитории и источники пакетов / Repositories & Package Sources
+
+Все пакеты распространяются через **GitHub Releases** и контейнерные реестры:
+
+| Платформа / Platform | Тип пакета / Package Type | Репозиторий / Repository | URL |
+|----------|---------------|--------|-----|
+| **OpenWRT** | IPK/APK | GitHub Releases (opkg repo) | `https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/packages/openwrt/<arch>/` |
+| **KeeneticOS** | KNP | GitHub Releases | `https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router_1.0.1.knp` |
+| **KeeneticOS** | Entware (opkg) | Entware репозиторий (после добавления в feed) | `https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/packages/keenetic/` |
+| **MikroTik** | NPK | GitHub Releases | `https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router-1.0.1.npk` |
+| **MikroTik** | Docker | GHCR (GitHub Container Registry) | `ghcr.io/chistovik92/hydravpn-router:1.0.1` |
+| **Все / All** | Бинарники / Binaries | GitHub Releases | `https://github.com/Chistovik92/HydraVPNforRouters/releases/tag/v1.0.1` |
+
+**Поддерживаемые архитектуры OpenWRT / OpenWRT Architectures:**
+- `x86_64` — x86_64 (Intel/AMD 64-bit)
+- `aarch64_cortex-a53` — ARM64 (Raspberry Pi 4, NanoPi R4S, etc.)
+- `arm_cortex-a7_neon-vfpv4` — ARMv7 (NanoPi R2S, Xiaomi Mi Router 4A, etc.)
+- `mips_24kc` — MIPS (MT7621, MT7620, etc.)
+- `mipsel_24kc` — MIPSLE (MT7621, MT7620 little-endian)
+
+---
+
 ## Быстрая установка через терминал / Quick Terminal Install
 
 ### OpenWRT (одной командой / single command)
@@ -13,8 +35,15 @@ echo "src/gz hydravpn_router https://github.com/Chistovik92/HydraVPNforRouters/r
 ```
 
 ### KeeneticOS Entware (одной командой / single command)
+
+**Сначала добавьте репозиторий (один раз) / Add repository first (once):**
 ```bash
-opkg update && opkg install hydravpn-router && vi /opt/etc/hydravpn-router/config.yaml && /opt/etc/init.d/S99hydravpn-router enable && /opt/etc/init.d/S99hydravpn-router start
+echo "src/gz hydravpn_keenetic https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/packages/keenetic/" >> /opt/etc/opkg.conf && opkg update
+```
+
+**Потом установите / Then install:**
+```bash
+opkg install hydravpn-router && vi /opt/etc/hydravpn-router/config.yaml && /opt/etc/init.d/S99hydravpn-router enable && /opt/etc/init.d/S99hydravpn-router start
 ```
 
 ### MikroTik Docker (одной командой / single command)
@@ -29,6 +58,12 @@ opkg update && opkg install hydravpn-router && vi /opt/etc/hydravpn-router/confi
 ### OpenWRT
 
 #### Через официальный репозиторий (Рекомендуемый) / Official Repository (Recommended)
+
+**URL репозитория / Repository URL:**
+```
+https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/packages/openwrt/<arch>/
+```
+где `<arch>` — ваша архитектура (см. таблицу ниже).
 
 ```bash
 # 1. Добавьте репозиторий / Add repository
@@ -55,6 +90,11 @@ opkg install hydravpn-router
 - `mipsel_24kc` — MIPSLE (MT7621, MT7620 little-endian)
 
 #### Ручная установка IPK / Manual IPK Installation
+
+**Прямые ссылки на IPK / Direct IPK URLs:**
+```
+https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router_1.0.1_<arch>.ipk
+```
 
 ```bash
 # Определите архитектуру / Determine architecture
@@ -85,22 +125,36 @@ hydravpn-router config && /etc/init.d/hydravpn-router restart && hydravpn-router
 
 #### Через Entware (Рекомендуемый) / Via Entware (Recommended)
 
+**URL репозитория Entware / Entware Repository URL:**
+```
+https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/packages/keenetic/
+```
+
 ```bash
 # 1. Установите Entware через веб-UI: Приложения → Entware → Установить
+
 # 2. Подключитесь по SSH
 ssh root@keenetic.local
 
-# 3. Установите одной командой / Install with single command
+# 3. Добавьте репозиторий HydraVPN (один раз) / Add HydraVPN repo (once)
+echo "src/gz hydravpn_keenetic https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/packages/keenetic/" >> /opt/etc/opkg.conf
+
+# 4. Обновите и установите / Update and install
 opkg update && opkg install hydravpn-router
 
-# 4. Настройте / Configure
+# 5. Настройте / Configure
 vi /opt/etc/hydravpn-router/config.yaml
 
-# 5. Запустите и добавьте в автозагрузку / Start and enable
+# 6. Запустите и добавьте в автозагрузку / Start and enable
 /opt/etc/init.d/S99hydravpn-router enable && /opt/etc/init.d/S99hydravpn-router start
 ```
 
 #### KNP пакет (Нативный) / KNP Package (Native)
+
+**Скачать KNP / Download KNP:**
+```
+https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router_1.0.1.knp
+```
 
 ```bash
 # Скачайте и установите через веб-интерфейс:
@@ -113,6 +167,12 @@ vi /opt/etc/hydravpn-router/config.yaml
 ### MikroTik RouterOS
 
 #### Docker контейнер (Рекомендуемый для RouterOS 7+) / Docker Container (Recommended)
+
+**Docker образ / Docker Image:**
+```
+ghcr.io/chistovik92/hydravpn-router:1.0.1
+```
+(альтернативно: `docker.io/chistovik92/hydravpn-router:1.0.1`)
 
 ```bash
 # Полная установка через терминал / Full terminal installation
@@ -129,6 +189,11 @@ vi /opt/etc/hydravpn-router/config.yaml
 
 #### NPK пакет (Нативный) / NPK Package (Native)
 
+**Скачать NPK / Download NPK:**
+```
+https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router-1.0.1.npk
+```
+
 ```bash
 # 1. Загрузите NPK на роутер / Upload NPK to router
 # scp hydravpn-router-1.0.1.npk admin@router:/hydravpn-router-1.0.1.npk
@@ -143,16 +208,21 @@ vi /opt/etc/hydravpn-router/config.yaml
 ## Обновление / Update
 
 ```bash
-# OpenWRT
+# OpenWRT (через репозиторий / via repository)
 opkg update && opkg upgrade hydravpn-router && /etc/init.d/hydravpn-router restart
 
-# KeeneticOS Entware
+# KeeneticOS Entware (через репозиторий / via repository)
 opkg update && opkg upgrade hydravpn-router && /opt/etc/init.d/S99hydravpn-router restart
 
-# MikroTik Docker
+# KeeneticOS KNP (переустановка / reinstall)
+# Скачайте новый KNP: https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router_1.0.1.knp
+# Система → Компоненты → Обновить / System → Components → Update
+
+# MikroTik Docker (новый образ / new image)
 /container stop hydravpn-router && /container remove hydravpn-router && /container add name=hydravpn-router image=ghcr.io/chistovik92/hydravpn-router:1.0.1 ... && /container start hydravpn-router
 
-# MikroTik NPK
+# MikroTik NPK (новый NPK / new NPK)
+# Скачайте: https://github.com/Chistovik92/HydraVPNforRouters/releases/download/v1.0.1/hydravpn-router-1.0.1.npk
 /system package install file-name=hydravpn-router-1.0.1.npk && /system reboot
 ```
 
