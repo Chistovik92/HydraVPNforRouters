@@ -1,0 +1,235 @@
+# HydraVPN for Router Default Configuration
+# Copy to /etc/podkop-plus/config.yaml and modify as needed
+
+settings:
+  config_version: "1.0.0"
+  applied_migrations: []
+  
+  # DNS Settings
+  dns_type: "udp"
+  dns_server:
+    - "77.88.8.8"
+    - "77.88.8.1"
+  bootstrap_dns_server:
+    - "77.88.8.8"
+    - "77.88.8.1"
+  dns_check_interval: "10s"
+  dns_recovery_check_interval: "60s"
+  dns_check_timeout: "2s"
+  dns_rewrite_ttl: 60
+  dns_strategy: "prefer_ipv4"
+  dns_detour_enabled: false
+  # dns_detour_section: "main"
+  
+  # Network Interface Settings
+  source_network_interfaces:
+    - "br-lan"
+  enable_output_network_interface: false
+  # output_network_interface: "wan"
+  enable_badwan_interface_monitoring: false
+  # badwan_monitored_interfaces:
+  #   - "wan"
+  # badwan_reload_delay: 2000
+  
+  # Feature Flags
+  enable_yacd: false
+  disable_quic: false
+  
+  # Update Settings
+  list_update_enabled: true
+  update_interval: "24h"
+  component_update_check_enabled: true
+  component_update_check_interval: "24h"
+  
+  # Proxy Settings
+  latency_test_url: "https://www.gstatic.com/generate_204"
+  download_lists_via_proxy: false
+  download_components_via_proxy: false
+  # download_lists_via_proxy_section: "main"
+  # download_components_via_proxy_section: "main"
+  
+  # DHCP Handling
+  dont_touch_dhcp: false
+  
+  # Paths
+  config_path: "/etc/podkop-plus/sing-box/config.json"
+  cache_path: "/tmp/podkop-plus/cache.db"
+  
+  # Logging
+  log_level: "warn"
+  
+  # NTP
+  exclude_ntp: false
+  
+  # Shutdown
+  shutdown_correctly: false
+
+# Configuration Sections (Subscriptions, JSON Outbounds, etc.)
+sections:
+  # Example subscription section
+  # - name: "my-provider"
+  #   label: "My VPN Provider"
+  #   enabled: true
+  #   action: "connection"
+  #   selector_proxy_links: []
+  #   community_lists:
+  #     - "russia_inside"
+  #   rule_set:
+  #     - "https://example.com/rules.srs"
+  #   dashboard_filter_mode: "disabled"
+  #   dashboard_detect_server_country: "flag_emoji"
+  #   outbound_detour_enabled: false
+  #   sort_by_latency: false
+  #   fully_routed_ips: []
+
+# Section Interfaces (Virtual interfaces for sections)
+interfaces:
+  # - section: "my-provider"
+  #   name: "tun0"
+  #   domain_resolver_enabled: false
+  #   domain_resolver_dns_type: "udp"
+  #   domain_resolver_dns_server: "8.8.8.8"
+
+# Subscription URLs
+subscription_urls:
+  # - section: "my-provider"
+  #   url: "https://example.com/api/sub"
+  #   auto_user_agent: false
+  #   user_agent: "CustomAgent/1.0"
+  #   auto_hwid: true
+  #   subscription_update_enabled: true
+  #   subscription_update_interval: "1h"
+  #   download_via_proxy_enabled: false
+  #   show_dashboard_metadata: true
+  #   prefix_nodes: false
+  #   include_urltest_groups: true
+  #   hide_urltest_group_outbounds: true
+  #   hide_detour_outbounds: true
+
+# URL Test Groups (Latency-based selection)
+urltests:
+  # - section: "my-provider"
+  #   name: "Fastest"
+  #   check_interval: "3m"
+  #   tolerance: 50
+  #   testing_url: "https://www.gstatic.com/generate_204"
+  #   idle_timeout: "30m"
+  #   interrupt_exist_connections: true
+  #   pin_dashboard: true
+  #   filter_mode: "disabled"
+  #   detect_server_country: "flag_emoji"
+  #   exclude_countries: []
+  #   exclude_outbounds: []
+  #   exclude_regex: []
+  #   include_countries: []
+  #   include_outbounds: []
+  #   include_regex: []
+
+# Inbound Servers
+servers:
+  # Example VLESS Reality server
+  # - name: "vless-reality"
+  #   label: "VLESS Reality"
+  #   enabled: true
+  #   protocol: "vless"
+  #   listen: "0.0.0.0"
+  #   listen_port: 443
+  #   public_host: "vpn.example.com"
+  #   routing_mode: "rules"
+  #   security: "reality"
+  #   server_uuid: "00000000-0000-0000-0000-000000000000"
+  #   vless_flow: "none"
+  #   tls_server_name: "www.microsoft.com"
+  #   client_fingerprint: "chrome"
+  #   reality_handshake_server: "www.microsoft.com"
+  #   reality_handshake_server_port: 443
+  #   reality_private_key: "PRIVATE_KEY_FROM_sing-box_generate_reality-keypair"
+  #   reality_public_key: "PUBLIC_KEY_FROM_sing-box_generate_reality-keypair"
+  #   reality_short_id: "5a"
+  #   reality_max_time_difference: "1m"
+  #   transport: "tcp"
+  
+  # Example MTProto proxy
+  # - name: "mtproto"
+  #   label: "MTProto Proxy"
+  #   enabled: true
+  #   protocol: "mtproto"
+  #   listen: "0.0.0.0"
+  #   listen_port: 443
+  #   public_host: "vpn.example.com"
+  #   routing_mode: "rules"
+  #   mtproto_secret: "11111111111111111111111111111111"
+  #   mtproto_faketls: "google.com"
+  #   mtproto_padding: "1"
+  #   mtproto_domain_fronting_port: 443
+  #   mtproto_prefer_ip: "prefer-ipv4"
+  #   mtproto_tolerate_time_skewness: "3s"
+  #   mtproto_idle_timeout: "5m"
+  #   mtproto_handshake_timeout: "10s"
+  
+  # Example Tailscale endpoint
+  # - name: "tailscale"
+  #   label: "Tailscale"
+  #   enabled: true
+  #   protocol: "tailscale"
+  #   routing_mode: "rules"
+  #   tailscale_control_url: "https://controlplane.tailscale.com"
+  #   tailscale_hostname: "podkop-plus"
+  #   tailscale_auth_key: "tskey-auth-..."
+  #   tailscale_accept_routes: false
+  #   tailscale_advertise_exit_node: true
+
+# Routing Rules
+rules:
+  # - section: "my-provider"
+  #   enabled: true
+  #   outbound: "proxy-out"
+  #   protocol: ""
+  #   port: ""
+  #   port_range: ""
+  #   process: ""
+  #   process_path: ""
+  #   uid: ""
+  #   gid: ""
+  #   network: ""
+  #   inbound: ""
+  #   source: []
+  #   destination: []
+  #   domain: []
+  #   domain_suffix:
+  #     - "google.com"
+  #     - "youtube.com"
+  #   domain_keyword: []
+  #   geoip:
+  #     - "US"
+  #   geosite: []
+  #   invert: false
+
+# Rule Sets (External rule files)
+rule_sets:
+  # - name: "russia_inside"
+  #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_inside.srs"
+  #   interval: "24h"
+  # - name: "russia_outside"
+  #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_outside.srs"
+  #   interval: "24h"
+  # - name: "geoblock"
+  #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/geoblock.srs"
+  #   interval: "24h"
+
+# Community Lists (Predefined domain/IP lists)
+community_lists:
+  # - name: "russia_inside"
+  #   type: "domain"
+  #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_inside.lst"
+  #   interval: "24h"
+  # - name: "youtube"
+  #   type: "domain"
+  #   entries:
+  #     - "googlevideo.com"
+  #     - "youtube.com"
+  #     - "ytimg.com"
+  # - name: "discord"
+  #   type: "ip"
+  #   url: "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/discord.lst"
+  #   interval: "24h"

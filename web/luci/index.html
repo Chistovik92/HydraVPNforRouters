@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="app.name">HydraVPN for Router</title>
+    <link rel="stylesheet" href="hydravpn-router.css">
+</head>
+<body class="hydravpn-router">
+    <!-- Language Selector / Выбор языка -->
+    <div class="language-selector-container">
+        <label for="language-selector" data-i18n="language"></label>
+        <select id="language-selector">
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+        </select>
+    </div>
+
+    <!-- Global Status Indicator / Глобальный индикатор статуса -->
+    <div id="global-status-indicator" class="status-indicator unknown" title="Unknown">
+        <span class="status-dot"></span>
+        <span class="status-text" data-i18n="status.unknown">Unknown</span>
+    </div>
+
+    <!-- Header / Заголовок -->
+    <header class="hydravpn-header">
+        <h1 data-i18n="app.name">HydraVPN for Router</h1>
+        <div class="header-actions">
+            <span id="service-status" class="status-badge unknown" data-i18n="status.unknown">Unknown</span>
+            <button id="btn-reload" class="btn btn-secondary" data-i18n="reload">Reload</button>
+        </div>
+    </header>
+
+    <!-- Navigation Tabs / Навигационные вкладки -->
+    <nav class="hydravpn-tabs">
+        <button class="tab-button active" data-tab="dashboard" data-i18n="tab.dashboard">Dashboard</button>
+        <button class="tab-button" data-tab="settings" data-i18n="tab.settings">Settings</button>
+        <button class="tab-button" data-tab="subscriptions" data-i18n="tab.subscriptions">Subscriptions</button>
+        <button class="tab-button" data-tab="servers" data-i18n="tab.servers">Servers</button>
+        <button class="tab-button" data-tab="diagnostics" data-i18n="tab.diagnostics">Diagnostics</button>
+    </nav>
+
+    <!-- Main Content / Основной контент -->
+    <main class="hydravpn-main">
+        
+        <!-- Dashboard Tab / Вкладка Dashboard -->
+        <div id="tab-dashboard" class="hydravpn-tab-panel active">
+            <div id="dashboard-container">
+                <div class="dashboard-grid">
+                    <!-- Service Status / Статус сервиса -->
+                    <div class="card">
+                        <h2 data-i18n="status">Status</h2>
+                        <div class="status-info">
+                            <div class="status-item">
+                                <span class="status-label" data-i18n="status">Status:</span>
+                                <span id="service-status-detail" class="status-value">Loading...</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label" data-i18n="uptime">Uptime:</span>
+                                <span id="uptime" class="status-value">--</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Providers Status / Статус провайдеров -->
+                    <div class="card">
+                        <h2 data-i18n="providers.status">Providers Status</h2>
+                        <div id="providers-status" class="providers-grid">
+                            <div class="loading" data-i18n="loading">Loading...</div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Stats / Быстрая статистика -->
+                    <div class="card">
+                        <h2 data-i18n="dashboard">Quick Stats</h2>
+                        <div id="dashboard-stats" class="stats-grid">
+                            <div class="stat-item">
+                                <span class="stat-label" data-i18n="subscriptions">Subscriptions</span>
+                                <span id="stat-subscriptions" class="stat-value">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label" data-i18n="servers">Servers</span>
+                                <span id="stat-servers" class="stat-value">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label" data-i18n="check.proxy">Proxy</span>
+                                <span id="stat-proxy" class="stat-value">--</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label" data-i18n="check.dns">DNS</span>
+                                <span id="stat-dns" class="stat-value">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Tab / Вкладка Настроек -->
+        <div id="tab-settings" class="hydravpn-tab-panel">
+            <div class="settings-container">
+                <form id="settings-form" class="settings-form">
+                    <!-- DNS Settings / DNS Настройки -->
+                    <fieldset class="settings-section">
+                        <legend data-i18n="settings.dns">DNS Settings</legend>
+                        
+                        <div class="form-group">
+                            <label for="dns-type" data-i18n="settings.dns_type">DNS Type</label>
+                            <select id="dns-type" name="dns_type">
+                                <option value="udp">UDP</option>
+                                <option value="tcp">TCP</option>
+                                <option value="https">HTTPS (DoH)</option>
+                                <option value="tls">TLS (DoT)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dns-servers" data-i18n="settings.dns_servers">DNS Servers (one per line)</label>
+                            <textarea id="dns-servers" name="dns_servers" rows="4" placeholder="77.88.8.8&#10;77.88.8.1"></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="bootstrap-dns" data-i18n="settings.bootstrap_dns">Bootstrap DNS (one per line)</label>
+                            <textarea id="bootstrap-dns" name="bootstrap_dns" rows="3" placeholder="77.88.8.8&#10;77.88.8.1"></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dns-strategy" data-i18n="settings.dns_strategy">DNS Strategy</label>
+                            <select id="dns-strategy" name="dns_strategy">
+                                <option value="prefer_ipv4" data-i18n="prefer_ipv4">Prefer IPv4</option>
+                                <option value="prefer_ipv6" data-i18n="prefer_ipv6">Prefer IPv6</option>
+                                <option value="ipv4_only" data-i18n="ipv4_only">IPv4 Only</option>
+                                <option value="ipv6_only" data-i18n="ipv6_only">IPv6 Only</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group checkbox-group">
+                            <input type="checkbox" id="dns-detour" name="dns_detour">
+                            <label for="dns-detour" data-i18n="settings.dns_detour">Enable DNS Detour</label>
+                        </div>
+                    </fieldset>
+
+                    <!-- Network Settings / Сетевые настройки -->
+                    <fieldset class="settings-section">
+                        <legend data-i18n="settings.network">Network</legend>
+                        
+                        <div class="form-group">
+                            <label for="source-interfaces" data-i18n="settings.source_interfaces">Source Interfaces (one per line)</label>
+                            <textarea id="source-interfaces" name="source_interfaces" rows="3" placeholder="br-lan&#10;eth1"></textarea>
+                        </div>
+                    </fieldset>
+
+                    <!-- General Settings / Общие настройки -->
+                    <fieldset class="settings-section">
+                        <legend data-i18n="settings.general">General</legend>
+                        
+                        <div class="form-group checkbox-group">
+                            <input type="checkbox" id="enable-yacd" name="enable_yacd">
+                            <label for="enable-yacd" data-i18n="settings.enable_yacd">Enable YACD Dashboard</label>
+                        </div>
+
+                        <div class="form-group checkbox-group">
+                            <input type="checkbox" id="disable-quic" name="disable_quic">
+                            <label for="disable-quic" data-i18n="settings.disable_quic">Disable QUIC</label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="latency-test-url" data-i18n="settings.latency_test_url">Latency Test URL</label>
+                            <input type="url" id="latency-test-url" name="latency_test_url" value="https://www.gstatic.com/generate_204">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="log-level" data-i18n="settings.log_level">Log Level</label>
+                            <select id="log-level" name="log_level">
+                                <option value="debug">Debug</option>
+                                <option value="info">Info</option>
+                                <option value="warn" selected>Warn</option>
+                                <option value="error">Error</option>
+                            </select>
+                        </div>
+                    </fieldset>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary" data-i18n="save">Save Settings</button>
+                        <button type="button" id="btn-reload-config" class="btn btn-secondary" data-i18n="reload">Reload Config</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Subscriptions Tab / Вкладка Подписок -->
+        <div id="tab-subscriptions" class="hydravpn-tab-panel">
+            <div class="subscriptions-container">
+                <div class="subscriptions-header">
+                    <h2 data-i18n="subscriptions">Subscriptions</h2>
+                    <button id="add-subscription" class="btn btn-primary" data-i18n="subscriptions.add">Add Subscription</button>
+                </div>
+                
+                <div id="subscriptions-list" class="subscriptions-list">
+                    <div class="loading" data-i18n="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Servers Tab / Вкладка Серверов -->
+        <div id="tab-servers" class="hydravpn-tab-panel">
+            <div class="servers-container">
+                <div class="servers-header">
+                    <h2 data-i18n="servers">Servers</h2>
+                    <button id="add-server" class="btn btn-primary" data-i18n="servers.add">Add Server</button>
+                </div>
+                
+                <div id="servers-list" class="servers-list">
+                    <div class="empty-state" data-i18n="servers.no_servers">No servers configured</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Diagnostics Tab / Вкладка Диагностики -->
+        <div id="tab-diagnostics" class="hydravpn-tab-panel">
+            <div class="diagnostics-container">
+                <div class="diagnostics-header">
+                    <h2 data-i18n="diagnostics">Diagnostics</h2>
+                </div>
+                
+                <div class="diagnostics-checks" id="diagnostics-checks">
+                    <h3 data-i18n="diagnostics.select_checks">Select Checks</h3>
+                    <div class="checks-grid">
+                        <label class="check-item">
+                            <input type="checkbox" value="proxy" checked>
+                            <span data-i18n="check.proxy">Proxy Connection</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="nft" checked>
+                            <span data-i18n="check.nft">NFTables</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="singbox" checked>
+                            <span data-i18n="check.singbox">sing-box</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="inbounds" checked>
+                            <span data-i18n="check.inbounds">Inbound Connections</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="dns" checked>
+                            <span data-i18n="check.dns">DNS</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="fakeip" checked>
+                            <span data-i18n="check.fakeip">FakeIP</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="zapret">
+                            <span data-i18n="check.zapret">zapret</span>
+                        </label>
+                        <label class="check-item">
+                            <input type="checkbox" value="byedpi">
+                            <span data-i18n="check.byedpi">ByeDPI</span>
+                        </label>
+                    </div>
+                    
+                    <button id="run-diagnostics" class="btn btn-primary" data-i18n="diagnostics.run">Run Diagnostics</button>
+                </div>
+                
+                <div id="diagnostics-results" class="diagnostics-results">
+                    <div class="empty-state" data-i18n="diagnostics.no_results">Run diagnostics to see results</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Notifications Container / Контейнер уведомлений -->
+    <div id="notifications" class="notifications-container"></div>
+
+    <!-- Scripts / Скрипты -->
+    <script src="i18n.js"></script>
+    <script src="hydravpn-router.js"></script>
+</body>
+</html>
