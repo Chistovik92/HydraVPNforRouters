@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -412,9 +411,7 @@ func (c *ClashAPI) handleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	id := r.URL.Path[len("/connections/"):]
-	
-	// Close connection
+// Close connection
 	c.writeJSON(w, map[string]string{"message": "Connection closed"})
 }
 

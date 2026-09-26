@@ -1,31 +1,45 @@
 # HydraVPN for Router
 
+> **Мультиплатформенное решение для обхода DPI на роутерах**  
 > **Multi-platform DPI bypass solution for routers**
 
-HydraVPN for Router is a comprehensive, platform-agnostic implementation of DPI bypass functionality for routers, inspired by Forkop and HydraVPN. It provides a unified solution that runs on OpenWRT, KeeneticOS, and MikroTik RouterOS with full feature parity.
+---
 
-## Features
+**HydraVPN for Router** — это комплексная, не зависящая от платформы реализация функционала обхода DPI для роутеров, вдохновленная Forkop и HydraVPN. Предоставляет единое решение, работающее на OpenWRT, KeeneticOS и MikroTik RouterOS с полной функциональной совместимостью.
 
-### Core Capabilities
-- **Multi-protocol proxy core** - Built on sing-box supporting VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard, and more
-- **DPI Bypass** - Multiple bypass methods:
-  - zapret/zapret2 (NFQWS/NFQWS2) - Advanced DPI desynchronization
-  - ByeDPI (ciadpi) - Passive DPI bypass
-- **Flexible Routing** - Domain, IP, GeoIP, GeoSite, process, port, and network-based routing rules
-- **Subscription Management** - Auto-update from VLESS/VMess/Trojan/SS/Hysteria2/Clash URLs
-- **DNS Management** - Failover, FakeIP, custom upstream servers, DoH/DoT support
-- **Clash API Compatible** - Works with Clash Dashboard, YACD, and other Clash clients
-- **Web UI** - Platform-native interfaces (LuCI for OpenWRT, native for KeeneticOS/MikroTik)
+**HydraVPN for Router** is a comprehensive, platform-agnostic implementation of DPI bypass functionality for routers, inspired by Forkop and HydraVPN. It provides a unified solution that runs on OpenWRT, KeeneticOS, and MikroTik RouterOS with full feature parity.
 
-### Platform Support
+## Возможности / Features
 
-| Platform | Package Format | Web UI | Init System | Status |
+### Основные возможности / Core Capabilities
+- **Мультипротокольное прокси-ядро** — на базе sing-box с поддержкой VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard и других
+- **Multi-protocol proxy core** — built on sing-box supporting VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard, and more
+- **Обход DPI** — несколько методов:
+- **DPI Bypass** — multiple bypass methods:
+  - zapret/zapret2 (NFQWS/NFQWS2) — продвинутая десинхронизация DPI
+  - zapret/zapret2 (NFQWS/NFQWS2) — advanced DPI desynchronization
+  - ByeDPI (ciadpi) — пассивный обход DPI
+  - ByeDPI (ciadpi) — passive DPI bypass
+- **Гибкая маршрутизация** — правила по доменам, IP, GeoIP, GeoSite, процессам, портам, сетям
+- **Flexible Routing** — domain, IP, GeoIP, GeoSite, process, port, and network-based routing rules
+- **Управление подписками** — автообновление из VLESS/VMess/Trojan/SS/Hysteria2/Clash URL
+- **Subscription Management** — auto-update from VLESS/VMess/Trojan/SS/Hysteria2/Clash URLs
+- **DNS-менеджмент** — фейловер, FakeIP, кастомные апстримы, DoH/DoT
+- **DNS Management** — failover, FakeIP, custom upstream servers, DoH/DoT support
+- **Clash API совместимость** — работает с Clash Dashboard, YACD и другими клиентами
+- **Clash API Compatible** — works with Clash Dashboard, YACD, and other Clash clients
+- **Веб-интерфейс** — нативные UI для каждой платформы (LuCI для OpenWRT, нативные для KeeneticOS/MikroTik)
+- **Web UI** — platform-native interfaces (LuCI for OpenWRT, native for KeeneticOS/MikroTik)
+
+### Поддержка платформ / Platform Support
+
+| Платформа / Platform | Формат пакета / Package Format | Веб-UI / Web UI | Init система / Init System | Статус / Status |
 |----------|---------------|--------|-------------|--------|
-| OpenWRT 21.02+ | IPK/APK | LuCI | procd | ✅ Full |
-| KeeneticOS 3.7+ | KNP/Entware | Native | ndm/Entware | ✅ Full |
-| RouterOS 7+ | NPK/Docker | Native | systemd/container | ✅ Full |
+| OpenWRT 21.02+ | IPK/APK | LuCI | procd | ✅ Полная / Full |
+| KeeneticOS 3.7+ | KNP/Entware | Native | ndm/Entware | ✅ Полная / Full |
+| RouterOS 7+ | NPK/Docker | Native | systemd/container | ✅ Полная / Full |
 
-## Architecture
+## Архитектура / Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -46,19 +60,19 @@ HydraVPN for Router is a comprehensive, platform-agnostic implementation of DPI 
     └─────────┘         └─────────┘         └─────────┘
 ```
 
-## Installation
+## Установка / Installation
 
 ### OpenWRT
 
 ```bash
-# Install via opkg
+# Установка через opkg / Install via opkg
 opkg update
 opkg install hydravpn-router
 
-# Or install IPK manually
-opkg install podkop-plus_1.0.0_all.ipk
+# Или установить IPK вручную / Or install IPK manually
+opkg install hydravpn-router_1.0.0_all.ipk
 
-# Enable and start
+# Включить и запустить / Enable and start
 /etc/init.d/hydravpn-router enable
 /etc/init.d/hydravpn-router start
 ```
@@ -66,28 +80,30 @@ opkg install podkop-plus_1.0.0_all.ipk
 ### KeeneticOS
 
 ```bash
-# Via Entware
+# Через Entware / Via Entware
 opkg update
 opkg install hydravpn-router
 
-# Or install KNP package via web interface
+# Или установить KNP пакет через веб-интерфейс / Or install KNP package via web interface
 # System → Components → Add component → hydravpn-router.knp
 ```
 
 ### MikroTik RouterOS
 
 ```bash
-# Via NPK package
-# Copy hydravpn-router.npk to router Files
+# Через NPK пакет / Via NPK package
+# Скопируйте hydravpn-router.npk в Files роутера / Copy hydravpn-router.npk to router Files
 # System → Packages → Install
 
-# Or via Docker container
+# Или через Docker контейнер / Or via Docker container
 /container add name=hydravpn-router image=hydravpn-router:latest \
     interface=veth1 mounts=hydravpn-router-config:/etc/hydravpn-router \
     dns=77.88.8.8,77.88.8.1 logging=yes
 ```
 
-## Configuration
+## Конфигурация / Configuration
+
+HydraVPN for Router использует единый YAML конфигурационный файл (`/etc/hydravpn-router/config.yaml`) на всех платформах:
 
 HydraVPN for Router uses a unified YAML configuration file (`/etc/hydravpn-router/config.yaml`) across all platforms:
 
@@ -200,135 +216,141 @@ community_lists:
     interval: "24h"
 ```
 
-## CLI Usage
+## Использование CLI / CLI Usage
 
 ```bash
-# Start service
+# Запуск сервиса / Start service
 hydravpn-router start -c /etc/hydravpn-router/config.yaml
 
-# Stop service
+# Остановка сервиса / Stop service
 hydravpn-router stop
 
-# Reload configuration
+# Перезагрузка конфигурации / Reload configuration
 hydravpn-router reload -c /etc/hydravpn-router/config.yaml
 
-# Show status
+# Показать статус / Show status
 hydravpn-router status
 
-# Show configuration
+# Показать конфигурацию / Show configuration
 hydravpn-router config
 
-# Show version
+# Показать версию / Show version
 hydravpn-router version
 
-# Run diagnostics
+# Запуск диагностики / Run diagnostics
 hydravpn-router check all
 hydravpn-router check proxy
 hydravpn-router check dns
 hydravpn-router check singbox
+hydravpn-router check inbounds
+hydravpn-router check fakeip
+hydravpn-router check nft
 ```
 
-## Web UI
+## Веб-интерфейс / Web UI
 
 ### OpenWRT (LuCI)
+Доступ через `http://router.ip/cgi-bin/luci/admin/services/hydravpn-router`  
 Access via `http://router.ip/cgi-bin/luci/admin/services/hydravpn-router`
 
 ### KeeneticOS
+Доступ через `http://router.ip/hydravpn-router` или `http://router.ip:8080`  
 Access via `http://router.ip/hydravpn-router` or `http://router.ip:8080`
 
 ### MikroTik
+Доступ через `http://router.ip:8080` (контейнер) или WinBox/WebFig  
 Access via `http://router.ip:8080` (container) or WinBox/WebFig
 
-## Building from Source
+## Сборка из исходников / Building from Source
 
-### Prerequisites
+### Требования / Prerequisites
 - Go 1.23+
-- Docker (for cross-platform builds)
-- OpenWRT SDK (for IPK/APK)
-- KeeneticOS SDK (for KNP)
-- MikroTik RouterOS build environment (for NPK)
+- Docker (для кросс-платформенных сборок / for cross-platform builds)
+- OpenWRT SDK (для IPK/APK / for IPK/APK)
+- KeeneticOS SDK (для KNP / for KNP)
+- Сборочное окружение MikroTik RouterOS (для NPK / for NPK)
 
-### Build Commands
+### Команды сборки / Build Commands
 
 ```bash
-# Build all platforms
+# Сборка всех платформ / Build all platforms
 ./scripts/build.sh 1.0.0 ./dist
 
-# Build specific platform
+# Сборка конкретной платформы / Build specific platform
 GOOS=linux GOARCH=amd64 go build -o hydravpn-router ./cmd/hydravpn-router
 
-# Build OpenWRT packages
+# Сборка OpenWRT пакетов / Build OpenWRT packages
 docker build -f build/openwrt/Dockerfile -t hydravpn-router-openwrt .
 docker run --rm -v $(pwd)/dist:/output hydravpn-router-openwrt
 
-# Build KeeneticOS package
+# Сборка KeeneticOS пакета / Build KeeneticOS package
 cd internal/platform/keenetic && go run . generate-knp 1.0.0 ./dist
 
-# Build MikroTik package
+# Сборка MikroTik пакета / Build MikroTik package
 cd internal/platform/mikrotik && go run . generate-npk 1.0.0 ./dist
 ```
 
 ## API
 
-### Clash API (Port 9090)
-- `GET /configs` - Get configuration
-- `GET /proxies` - List proxies and groups
-- `PUT /proxies/{name}` - Select proxy in group
-- `GET /rules` - List routing rules
-- `GET /connections` - Active connections
-- `GET /traffics` - Traffic statistics
-- `GET /memory` - Memory usage
-- `GET /version` - Version info
-- `GET /logs` - WebSocket log stream
+### Clash API (порт 9090 / Port 9090)
+- `GET /configs` — получить конфигурацию / get configuration
+- `GET /proxies` — список прокси и групп / list proxies and groups
+- `PUT /proxies/{name}` — выбрать прокси в группе / select proxy in group
+- `GET /rules` — список правил маршрутизации / list routing rules
+- `GET /connections` — активные соединения / active connections
+- `GET /traffics` — статистика трафика / traffic statistics
+- `GET /memory` — использование памяти / memory usage
+- `GET /version` — информация о версии / version info
+- `GET /logs` — WebSocket поток логов / WebSocket log stream
 
 ### RPC API (LuCI)
-- `get_status` - Service status
-- `get_config` - Current configuration
-- `set_config` - Update configuration
-- `reload` - Reload service
-- `get_subscriptions` - Subscription status
-- `update_subscription` - Force update
-- `run_diagnostics` - Run health checks
+- `get_status` — статус сервиса / service status
+- `get_config` — текущая конфигурация / current configuration
+- `set_config` — обновить конфигурацию / update configuration
+- `reload` — перезагрузить сервис / reload service
+- `get_subscriptions` — статус подписок / subscription status
+- `update_subscription` — принудительное обновление / force update
+- `run_diagnostics` — запуск проверок здоровья / run health checks
 
-## Development
+## Разработка / Development
 
-### Project Structure
+### Структура проекта / Project Structure
 ```
 hydravpn-router/
-├── cmd/hydravpn-router/           # Main entry point
+├── cmd/hydravpn-router/           # Главная точка входа / Main entry point
 ├── internal/
-│   ├── config/                # Configuration types
-│   ├── core/                  # Core engine
-│   ├── dns/                   # DNS management
-│   ├── firewall/              # Firewall abstraction
-│   ├── providers/             # Provider implementations
-│   │   ├── singbox/           # sing-box provider
-│   │   ├── zapret/            # zapret/zapret2 provider
-│   │   └── byedpi/            # ByeDPI provider
-│   ├── subscription/          # Subscription management
-│   ├── diagnostics/           # Health checks
-│   ├── api/                   # Clash API server
-│   └── platform/              # Platform adapters
-│       ├── openwrt/           # OpenWRT integration
-│       ├── keenetic/          # KeeneticOS integration
-│       └── mikrotik/          # MikroTik integration
+│   ├── config/                # Типы конфигурации / Configuration types
+│   ├── core/                  # Основной движок / Core engine
+│   ├── dns/                   # DNS управление / DNS management
+│   ├── firewall/              # Абстракция файрвола / Firewall abstraction
+│   ├── providers/             # Реализации провайдеров / Provider implementations
+│   │   ├── singbox/           # sing-box провайдер / sing-box provider
+│   │   ├── zapret/            # zapret/zapret2 провайдер / zapret/zapret2 provider
+│   │   └── byedpi/            # ByeDPI провайдер / ByeDPI provider
+│   ├── subscription/          # Управление подписками / Subscription management
+│   ├── diagnostics/           # Проверки здоровья / Health checks
+│   ├── api/                   # Clash API сервер / Clash API server
+│   └── platform/              # Адаптеры платформ / Platform adapters
+│       ├── openwrt/           # OpenWRT интеграция / OpenWRT integration
+│       ├── keenetic/          # KeeneticOS интеграция / KeeneticOS integration
+│       └── mikrotik/          # MikroTik интеграция / MikroTik integration
 ├── pkg/
-│   ├── version/               # Version info
-│   └── utils/                 # Utilities
-├── web/                       # Web UI sources
-│   ├── luci/                  # LuCI interface
+│   ├── version/               # Информация о версии / Version info
+│   └── utils/                 # Утилиты / Utilities
+├── web/                       # Исходники Web UI / Web UI sources
+│   ├── luci/                  # LuCI интерфейс / LuCI interface
 │   ├── keenetic/              # KeeneticOS UI
 │   └── mikrotik/              # MikroTik UI
-├── build/                     # Build scripts
-├── configs/                   # Default configs
-├── docs/                      # Documentation
-└── scripts/                   # Utility scripts
+├── build/                     # Скрипты сборки / Build scripts
+├── configs/                   # Конфиги по умолчанию / Default configs
+├── docs/                      # Документация / Documentation
+└── scripts/                   # Утилитарные скрипты / Utility scripts
 ```
 
-### Adding a New Provider
+### Добавление нового провайдера / Adding a New Provider
 
-1. Create provider in `internal/providers/newprovider/`
-2. Implement `Provider` interface:
+1. Создайте провайдер в `internal/providers/newprovider/`
+2. Реализуйте интерфейс `Provider`:
    ```go
    type Provider interface {
        Start(ctx context.Context) error
@@ -337,12 +359,12 @@ hydravpn-router/
        GetStatus() map[string]interface{}
    }
    ```
-3. Register in engine initialization
+3. Зарегистрируйте при инициализации движка
 
-### Adding a New Platform
+### Добавление новой платформы / Adding a New Platform
 
-1. Create platform in `internal/platform/newplatform/`
-2. Implement `Platform` interface:
+1. Создайте платформу в `internal/platform/newplatform/`
+2. Реализуйте интерфейс `Platform`:
    ```go
    type Platform interface {
        Initialize(ctx context.Context) error
@@ -354,24 +376,21 @@ hydravpn-router/
    }
    ```
 
-## License
+## Лицензия / License
 
 GPL-3.0-or-later
 
-## Credits
+## Благодарности / Credits
 
-- **Forkop** - Original OpenWRT DPI bypass implementation
-- **HydraVPN** - Mobile VPN client reference
-- **sing-box** - Universal proxy platform
-- **zapret/zapret2** - DPI bypass tools
-- **ByeDPI/ciadpi** - Passive DPI bypass
-- **OpenWRT/KeeneticOS/MikroTik** - Target platforms
+- **Forkop** — оригинальная OpenWRT реализация обхода DPI / Original OpenWRT DPI bypass implementation
+- **HydraVPN** — мобильный VPN клиент-референс / Mobile VPN client reference
+- **sing-box** — универсальная прокси-платформа / Universal proxy platform
+- **zapret/zapret2** — инструменты обхода DPI / DPI bypass tools
+- **ByeDPI/ciadpi** — пассивный обход DPI / Passive DPI bypass
+- **OpenWRT/KeeneticOS/MikroTik** — целевые платформы / Target platforms
 
-## Support
+## Поддержка / Support
 
-- GitHub Issues: https://github.com/Chistovik92/hydravpn-router/issues
-- Documentation: https://github.com/Chistovik92/hydravpn-router/wiki
+- GitHub Issues: https://github.com/Chistovik92/HydraVPNforRouters/issues
+- Документация / Documentation: https://github.com/Chistovik92/HydraVPNforRouters/wiki
 - Telegram: @podkop_plus
-
-
-

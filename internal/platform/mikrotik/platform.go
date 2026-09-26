@@ -2,22 +2,14 @@ package mikrotik
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
-	"github.com/Chistovik92/hydravpn-router/internal/dns"
-	"github.com/Chistovik92/hydravpn-router/internal/firewall"
-	"github.com/Chistovik92/hydravpn-router/internal/providers/byedpi"
-	"github.com/Chistovik92/hydravpn-router/internal/providers/singbox"
-	"github.com/Chistovik92/hydravpn-router/internal/providers/zapret"
-	"github.com/Chistovik92/hydravpn-router/internal/subscription"
 )
 
 // Platform implements the MikroTik RouterOS platform integration
@@ -315,15 +307,6 @@ func (p *Platform) updateRouterOSState(state core.EngineState) {
 
 // logToRouterOS logs to RouterOS log
 func (p *Platform) logToRouterOS(level, msg string) {
-	priority := "info"
-	switch level {
-	case "error":
-		priority = "error"
-	case "warn":
-		priority = "warning"
-	case "debug":
-		priority = "debug"
-	}
 	exec.Command("/log", "print", "where", "topics~podkop-plus", "message="+msg).Run()
 }
 

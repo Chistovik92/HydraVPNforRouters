@@ -8,16 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
-	"github.com/Chistovik92/hydravpn-router/internal/dns"
-	"github.com/Chistovik92/hydravpn-router/internal/firewall"
-	"github.com/Chistovik92/hydravpn-router/internal/providers/byedpi"
-	"github.com/Chistovik92/hydravpn-router/internal/providers/singbox"
-	"github.com/Chistovik92/hydravpn-router/internal/providers/zapret"
-	"github.com/Chistovik92/hydravpn-router/internal/subscription"
 )
 
 // Platform implements the OpenWRT platform integration
