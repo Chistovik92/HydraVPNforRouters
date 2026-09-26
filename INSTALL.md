@@ -267,4 +267,4 @@ logread -f -e hydravpn-router          # OpenWRT/KeeneticOS
 
 - **GitHub Issues**: https://github.com/Chistovik92/HydraVPNforRouters/issues
 - **Releases**: https://github.com/Chistovik92/HydraVPNforRouters/releases
-- **Telegram**: @podkop_plus
+- **Telegram**: @SecretHero
