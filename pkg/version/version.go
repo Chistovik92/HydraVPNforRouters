@@ -1,7 +1,7 @@
 package version
 
 var (
-	Version   = "1.0.0"
+	Version   = "1.0.1"
 	Commit    = "dev"
 	Date      = "unknown"
 	BuiltBy   = "unknown"
@@ -13,5 +13,5 @@ func FullVersion() string {
 }
 
 func UserAgent() string {
-	return "PodkopPlus/" + Version
+	return "HydraVPNRouter/" + Version
 }
