@@ -1,5 +1,6 @@
 # HydraVPN for Router Default Configuration
-# Copy to /etc/podkop-plus/config.yaml and modify as needed
+# Copy to /etc/hydravpn-router/config.yaml (Keenetic: /opt/etc/hydravpn-router/config.yaml)
+# and modify as needed. config_version is the config schema version, not the app version.
 
 settings:
   config_version: "1.0.0"
@@ -20,6 +21,8 @@ settings:
   dns_strategy: "prefer_ipv4"
   dns_detour_enabled: false
   # dns_detour_section: "main"
+  # FakeIP DNS (198.18.0.0/15) for domain-based routing
+  fakeip_enabled: false
   
   # Network Interface Settings
   source_network_interfaces:
@@ -52,8 +55,9 @@ settings:
   dont_touch_dhcp: false
   
   # Paths
-  config_path: "/etc/podkop-plus/sing-box/config.json"
-  cache_path: "/tmp/podkop-plus/cache.db"
+  singbox_binary: "sing-box"
+  config_path: "/etc/hydravpn-router/sing-box/config.json"
+  cache_path: "/tmp/hydravpn-router/cache.db"
   
   # Logging
   log_level: "warn"
@@ -71,6 +75,10 @@ sections:
   #   label: "My VPN Provider"
   #   enabled: true
   #   action: "connection"
+  #   # DPI bypass engine: singbox (default), zapret, zapret2, byedpi
+  #   provider: "singbox"
+  #   # Replaces the default nfqws/nfqws2/ciadpi strategy (command line options)
+  #   # provider_options: "--filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld"
   #   selector_proxy_links: []
   #   community_lists:
   #     - "russia_inside"
@@ -174,7 +182,7 @@ servers:
   #   protocol: "tailscale"
   #   routing_mode: "rules"
   #   tailscale_control_url: "https://controlplane.tailscale.com"
-  #   tailscale_hostname: "podkop-plus"
+  #   tailscale_hostname: "hydravpn-router"
   #   tailscale_auth_key: "tskey-auth-..."
   #   tailscale_accept_routes: false
   #   tailscale_advertise_exit_node: true

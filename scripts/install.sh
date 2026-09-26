@@ -1,663 +1,506 @@
 #!/bin/sh
-# HydraVPN for Router - Universal Auto-Install Script
-# Detects platform, fetches latest version, and installs automatically
-# Works on: OpenWRT, KeeneticOS (Entware), MikroTik (RouterOS), Linux, Docker
+# HydraVPN for Router - install / update script
 #
-# Usage: 
+# Downloads the release binary for this router from GitHub Releases,
+# installs the service (procd on OpenWrt, rc.func on Keenetic Entware,
+# systemd on Linux) and keeps the existing configuration.
+#
+# Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
+#   sh install.sh --yes --version 1.0.3
+#
+# MikroTik RouterOS has no POSIX shell: use the container instructions in
+# INSTALL.md instead.
 
-set -e
+set -eu
 
-# Configuration
 REPO_OWNER="Chistovik92"
 REPO_NAME="HydraVPNforRouters"
 GITHUB_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}"
-RAW_BASE="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 RELEASE_BASE="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download"
+IMAGE="ghcr.io/chistovik92/hydravpn-router"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
 
 log_info() { printf "${BLUE}[INFO]${NC} %s\n" "$*"; }
-log_ok() { printf "${GREEN}[OK]${NC} %s\n" "$*"; }
+log_ok()   { printf "${GREEN}[OK]${NC} %s\n" "$*"; }
 log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
-log_err() { printf "${RED}[ERR]${NC} %s\n" "$*"; }
+log_err()  { printf "${RED}[ERR]${NC} %s\n" "$*" >&2; }
+die()      { log_err "$*"; exit 1; }
 
-# Detect platform
-detect_platform() {
-    if [ -f /etc/openwrt_release ]; then
-        . /etc/openwrt_release
-        PLATFORM="openwrt"
-        ARCH="${DISTRIB_ARCH}_${DISTRIB_TARGET//\//_}"
-        PKG_MGR="opkg"
-        CONFIG_DIR="/etc/hydravpn-router"
-        SERVICE_CMD="/etc/init.d/hydravpn-router"
-    elif [ -f /opt/etc/opkg.conf ] && (grep -q "keenetic" /opt/etc/opkg.conf 2>/dev/null || grep -q "entware" /opt/etc/opkg.conf 2>/dev/null); then
-        PLATFORM="keenetic-entware"
-        ARCH="mipsel_24kc"
-        PKG_MGR="opkg"
-        CONFIG_DIR="/opt/etc/hydravpn-router"
-        SERVICE_CMD="/opt/etc/init.d/S99hydravpn-router"
-    elif [ -d /flash ] && command -v /system >/dev/null 2>&1; then
-        PLATFORM="mikrotik"
-        PKG_MGR=""
-        CONFIG_DIR="/flash/hydravpn-router"
-        SERVICE_CMD=""
-    elif command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
-        PLATFORM="docker"
-        PKG_MGR="docker"
-        CONFIG_DIR="/etc/hydravpn-router"
-        SERVICE_CMD=""
+# ---------------------------------------------------------------- helpers
+
+# fetch URL FILE - download with curl, wget or uclient-fetch
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 2 -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$2" "$1"
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -O "$2" "$1"
     else
-        PLATFORM="linux"
-        ARCH=$(uname -m)
-        case "$ARCH" in
-            x86_64) ARCH="amd64" ;;
-            aarch64) ARCH="arm64" ;;
-            armv7l) ARCH="armv7" ;;
-            mips) ARCH="mips" ;;
-            mipsel) ARCH="mipsle" ;;
-            *) log_err "Unsupported architecture: $ARCH"; exit 1 ;;
-        esac
-        PKG_MGR="binary"
-        CONFIG_DIR="/etc/hydravpn-router"
-        SERVICE_CMD="systemctl"
+        die "curl or wget is required"
     fi
-    log_info "Platform: $PLATFORM (arch: ${ARCH:-auto})"
 }
 
-# Get latest version
-get_latest_version() {
-    log_info "Fetching latest version from GitHub..."
-    LATEST_VERSION=$(curl -fsSL "${GITHUB_API}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
-    
-    if [ -z "$LATEST_VERSION" ]; then
-        LATEST_VERSION=$(curl -fsSL "${GITHUB_API}/tags" 2>/dev/null | grep '"name"' | head -1 | sed -E 's/.*"name": "([^"]+)".*/\1/')
+# fetch_stdout URL
+fetch_stdout() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O - "$1"
+    else
+        uclient-fetch -q -O - "$1"
     fi
-    
-    if [ -z "$LATEST_VERSION" ]; then
-        log_err "Failed to fetch latest version"
-        return 1
-    fi
-    
-    log_ok "Latest version: $LATEST_VERSION"
 }
 
-# Check if already installed
-check_installed() {
-    case "$PLATFORM" in
-        openwrt|keenetic-entware|linux)
-            if command -v hydravpn-router >/dev/null 2>&1; then
-                INSTALLED_VERSION=$(hydravpn-router version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-                log_info "Already installed: v$INSTALLED_VERSION"
-                return 0
-            fi
-            ;;
-        mikrotik)
-            if /system package print | grep -q hydravpn-router; then
-                INSTALLED_VERSION=$(/system package print where name=hydravpn-router | grep version | sed 's/.*version=\([^ ]*\).*/\1/')
-                log_info "Already installed (NPK): v$INSTALLED_VERSION"
-                return 0
-            fi
-            if /container print where name=hydravpn-router 2>/dev/null | grep -q image; then
-                INSTALLED_VERSION=$(/container print where name=hydravpn-router | grep image | sed 's/.*image=\([^ ]*\).*/\1/' | sed 's/.*://')
-                log_info "Already installed (Docker): v$INSTALLED_VERSION"
-                return 0
-            fi
-            ;;
-        docker)
-            if docker ps -a --format '{{.Image}}' | grep -q hydravpn-router; then
-                INSTALLED_VERSION=$(docker inspect ghcr.io/chistovik92/hydravpn-router:latest 2>/dev/null | grep '"Tag"' | sed 's/.*"latest"//' | sed 's/.*://' | tr -d '", ')
-                log_info "Already installed (Docker): v$INSTALLED_VERSION"
-                return 0
-            fi
-            ;;
+# ask QUESTION - yes/no prompt that also works with "curl | sh"
+ask() {
+    [ "$AUTO_YES" = "1" ] && return 0
+    # Subshell: a failed redirection on a special builtin would exit dash.
+    if ! (: </dev/tty) 2>/dev/null; then
+        die "No terminal to ask for confirmation. Re-run with --yes."
+    fi
+    printf "%s [y/N]: " "$1" >/dev/tty
+    read -r REPLY </dev/tty || REPLY=""
+    case "$REPLY" in
+        [Yy]*) return 0 ;;
+        *) return 1 ;;
     esac
+}
+
+# strip_v VERSION - "v1.0.3" -> "1.0.3"
+strip_v() { echo "${1#v}"; }
+
+# version_gt A B - true when A > B (numeric x.y.z comparison)
+version_gt() {
+    [ "$1" = "$2" ] && return 1
+    a="$1"; b="$2"
+    while [ -n "$a" ] || [ -n "$b" ]; do
+        x="${a%%.*}"; y="${b%%.*}"
+        x="${x:-0}"; y="${y:-0}"
+        [ "$x" -gt "$y" ] 2>/dev/null && return 0
+        [ "$x" -lt "$y" ] 2>/dev/null && return 1
+        case "$a" in *.*) a="${a#*.}" ;; *) a="" ;; esac
+        case "$b" in *.*) b="${b#*.}" ;; *) b="" ;; esac
+    done
     return 1
 }
 
-# Ask for confirmation
-ask_confirm() {
-    if [ "$AUTO_YES" = "1" ]; then
-        return 0
+# ---------------------------------------------------------------- detection
+
+# is_little_endian - reads the ELF data byte of /bin/sh (1 = LE, 2 = BE)
+is_little_endian() {
+    byte=$(dd if=/bin/sh bs=1 skip=5 count=1 2>/dev/null | od -b | awk 'NR==1 {print $2}')
+    [ "$byte" = "001" ]
+}
+
+# go_arch - maps the machine to the Go release suffix
+go_arch() {
+    if [ "$PLATFORM" = "openwrt" ] && [ -n "${DISTRIB_ARCH:-}" ]; then
+        case "$DISTRIB_ARCH" in
+            x86_64*) echo amd64; return ;;
+            i386*|i486*|i686*) echo 386; return ;;
+            aarch64*) echo arm64; return ;;
+            arm_arm1176*|arm_arm926*|arm_fa526*|arm_xscale*) echo armv6; return ;;
+            arm*) echo armv7; return ;;
+            mipsel*) echo mipsle; return ;;
+            mips64el*) echo mips64le; return ;;
+            mips64*) echo mips64; return ;;
+            mips*) echo mips; return ;;
+        esac
     fi
-    
-    if [ -n "$INSTALLED_VERSION" ]; then
-        printf "\n${YELLOW}Установлена версия: ${INSTALLED_VERSION}${NC}\n"
-        printf "Доступная версия: ${LATEST_VERSION}\n"
-        printf "Переустановить/обновить? [y/N]: "
-    else
-        printf "\n${YELLOW}Установить HydraVPN for Router ${LATEST_VERSION}?${NC}\n"
-        printf "Продолжить? [y/N]: "
-    fi
-    read -r REPLY
-    case "$REPLY" in
-        [Yy]*) return 0 ;;
-        *) log_info "Установка отменена"; exit 0 ;;
+
+    m=$(uname -m)
+    case "$m" in
+        x86_64|amd64) echo amd64 ;;
+        i386|i486|i586|i686) echo 386 ;;
+        aarch64|arm64) echo arm64 ;;
+        armv7*|armv8l) echo armv7 ;;
+        armv6*|armv5*) echo armv6 ;;
+        mips64*) if is_little_endian; then echo mips64le; else echo mips64; fi ;;
+        # uname reports "mips" for both endiannesses (e.g. MT7621 is little-endian)
+        mips*) if is_little_endian; then echo mipsle; else echo mips; fi ;;
+        *) die "Unsupported architecture: $m" ;;
     esac
 }
 
-# Install OpenWRT
-install_openwrt() {
-    log_info "Installing on OpenWRT..."
-    
-    # Add repository
-    REPO_URL="${RELEASE_BASE}/${LATEST_VERSION}/packages/openwrt/${ARCH}/"
-    if ! grep -q "hydravpn_router" /etc/opkg/customfeeds.conf 2>/dev/null; then
-        echo "src/gz hydravpn_router ${REPO_URL}" >> /etc/opkg/customfeeds.conf
-        log_ok "Repository added: $REPO_URL"
+detect_platform() {
+    if [ "$METHOD" = "docker" ]; then
+        PLATFORM="docker"
+    elif [ -f /etc/openwrt_release ]; then
+        # shellcheck disable=SC1091
+        . /etc/openwrt_release
+        PLATFORM="openwrt"
+    elif [ -x /opt/bin/opkg ] && [ -d /opt/etc ]; then
+        PLATFORM="keenetic-entware"
+    elif [ "$(uname -s)" = "Linux" ]; then
+        PLATFORM="linux"
+    else
+        die "Unsupported system: $(uname -s). For MikroTik see INSTALL.md."
     fi
-    
-    opkg update
-    opkg install hydravpn-router
-    
-    # Create default config if not exists
-    mkdir -p "$CONFIG_DIR"
-    if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
-        curl -fsSL "${RAW_BASE}/configs/config.yaml" -o "$CONFIG_DIR/config.yaml" 2>/dev/null || \
-        cat > "$CONFIG_DIR/config.yaml" << 'EOF'
-settings:
-  config_version: "1.0.0"
-  dns_type: "udp"
-  dns_server:
-    - "77.88.8.8"
-    - "77.88.8.1"
-  bootstrap_dns_server:
-    - "77.88.8.8"
-    - "77.88.8.1"
-  dns_check_interval: "10s"
-  dns_recovery_check_interval: "60s"
-  dns_check_timeout: "2s"
-  dns_rewrite_ttl: 60
-  dns_strategy: "prefer_ipv4"
-  dns_detour_enabled: false
-  source_network_interfaces:
-    - "br-lan"
-  enable_output_network_interface: false
-  enable_badwan_interface_monitoring: false
-  enable_yacd: false
-  disable_quic: false
-  list_update_enabled: true
-  update_interval: "24h"
-  component_update_check_enabled: true
-  component_update_check_interval: "24h"
-  latency_test_url: "https://www.gstatic.com/generate_204"
-  download_lists_via_proxy: false
-  download_components_via_proxy: false
-  dont_touch_dhcp: false
-  config_path: "/etc/hydravpn-router/sing-box/config.json"
-  cache_path: "/tmp/hydravpn-router/cache.db"
-  log_level: "warn"
-  exclude_ntp: false
-  shutdown_correctly: false
 
-sections:
-  - name: "my-subscription"
-    label: "My VPN"
-    enabled: false
-    action: "connection"
-    selector_proxy_links: []
-    community_lists: []
-    rule_set: []
+    case "$PLATFORM" in
+        openwrt)
+            BIN="/usr/bin/hydravpn-router"
+            CONFIG_DIR="/etc/hydravpn-router"
+            RUNTIME_DIR="/var/run/hydravpn-router"
+            SERVICE="/etc/init.d/hydravpn-router"
+            LAN_IF="br-lan"
+            ;;
+        keenetic-entware)
+            BIN="/opt/bin/hydravpn-router"
+            CONFIG_DIR="/opt/etc/hydravpn-router"
+            RUNTIME_DIR="/opt/var/run/hydravpn-router"
+            SERVICE="/opt/etc/init.d/S99hydravpn-router"
+            LAN_IF="br0"
+            ;;
+        linux)
+            BIN="/usr/local/bin/hydravpn-router"
+            CONFIG_DIR="/etc/hydravpn-router"
+            RUNTIME_DIR="/var/run/hydravpn-router"
+            SERVICE="systemd"
+            LAN_IF="eth0"
+            ;;
+        docker)
+            BIN=""; CONFIG_DIR="/etc/hydravpn-router"; RUNTIME_DIR=""; SERVICE=""; LAN_IF="eth0"
+            ;;
+    esac
 
-interfaces:
-  - section: "my-subscription"
-    name: "tun0"
-    domain_resolver_enabled: true
-
-subscription_urls: []
-
-urltests: []
-
-servers: []
-
-rules: []
-
-rule_sets: []
-
-community_lists: []
-EOF
-        log_ok "Default config created at $CONFIG_DIR/config.yaml"
+    if [ "$PLATFORM" != "docker" ]; then
+        ARCH=$(go_arch)
+    else
+        ARCH=""
     fi
-    
-    $SERVICE_CMD enable
-    $SERVICE_CMD start
-    log_ok "OpenWRT installation completed"
+    log_info "Platform: $PLATFORM${ARCH:+ (arch: $ARCH)}"
 }
 
-# Install KeeneticOS Entware
-install_keenetic_entware() {
-    log_info "Installing on KeeneticOS (Entware)..."
-    
-    # Add repository
-    REPO_URL="${RELEASE_BASE}/${LATEST_VERSION}/packages/keenetic/"
-    if ! grep -q "hydravpn_keenetic" /opt/etc/opkg.conf 2>/dev/null; then
-        echo "src/gz hydravpn_keenetic ${REPO_URL}" >> /opt/etc/opkg.conf
-        log_ok "Repository added: $REPO_URL"
+get_latest_version() {
+    if [ -n "$WANT_VERSION" ]; then
+        LATEST_VERSION=$(strip_v "$WANT_VERSION")
+        return 0
     fi
-    
-    opkg update
-    opkg install hydravpn-router
-    
-    # Create default config
+    log_info "Fetching latest release from GitHub..."
+    tag=$(fetch_stdout "${GITHUB_API}/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) || true
+    [ -n "$tag" ] || die "Failed to fetch the latest release (GitHub API unreachable or rate-limited). Use --version X.Y.Z."
+    LATEST_VERSION=$(strip_v "$tag")
+    log_ok "Latest version: $LATEST_VERSION"
+}
+
+get_installed_version() {
+    INSTALLED_VERSION=""
+    if [ -n "${BIN:-}" ] && [ -x "$BIN" ]; then
+        INSTALLED_VERSION=$("$BIN" version 2>/dev/null | grep -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*' | head -n 1) || true
+    fi
+    if [ -n "$INSTALLED_VERSION" ]; then
+        log_info "Installed version: $INSTALLED_VERSION"
+    fi
+}
+
+# ---------------------------------------------------------------- install
+
+download_binary() {
+    asset="hydravpn-router-${LATEST_VERSION}-linux-${ARCH}"
+    url="${RELEASE_BASE}/v${LATEST_VERSION}/${asset}"
+    TMP_BIN="${BIN}.new"
+
+    log_info "Downloading $url"
+    mkdir -p "$(dirname "$BIN")"
+    fetch "$url" "$TMP_BIN" || { rm -f "$TMP_BIN"; die "Download failed: $url"; }
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sums=$(fetch_stdout "${RELEASE_BASE}/v${LATEST_VERSION}/checksums.txt" 2>/dev/null) || sums=""
+        # Names may carry sha256sum's binary-mode "*" prefix.
+        expected=$(printf '%s\n' "$sums" | awk -v f="$asset" '{n = $2; sub(/^\*/, "", n)} n == f {print $1}')
+        if [ -n "$expected" ]; then
+            actual=$(sha256sum "$TMP_BIN" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+                rm -f "$TMP_BIN"
+                die "Checksum mismatch for $asset"
+            fi
+            log_ok "Checksum verified"
+        else
+            log_warn "No checksum published for $asset, skipping verification"
+        fi
+    fi
+
+    chmod 0755 "$TMP_BIN"
+    "$TMP_BIN" version >/dev/null 2>&1 || { rm -f "$TMP_BIN"; die "Downloaded binary does not run on this CPU (arch $ARCH)"; }
+}
+
+write_default_config() {
+    [ -f "$CONFIG_DIR/config.yaml" ] && return 0
     mkdir -p "$CONFIG_DIR"
-    if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
-        curl -fsSL "${RAW_BASE}/configs/config.yaml" -o "$CONFIG_DIR/config.yaml" 2>/dev/null || \
-        cat > "$CONFIG_DIR/config.yaml" << 'EOF'
+    cat > "$CONFIG_DIR/config.yaml" <<EOF
+# HydraVPN for Router configuration. Unset values use built-in defaults,
+# see https://github.com/${REPO_OWNER}/${REPO_NAME}/blob/main/configs/config.yaml
 settings:
-  config_version: "1.0.0"
-  dns_type: "udp"
   dns_server:
     - "77.88.8.8"
     - "77.88.8.1"
   bootstrap_dns_server:
     - "77.88.8.8"
     - "77.88.8.1"
-  dns_check_interval: "10s"
-  dns_recovery_check_interval: "60s"
-  dns_check_timeout: "2s"
-  dns_rewrite_ttl: 60
-  dns_strategy: "prefer_ipv4"
-  dns_detour_enabled: false
   source_network_interfaces:
-    - "br0"
-  enable_output_network_interface: false
-  enable_badwan_interface_monitoring: false
-  enable_yacd: false
-  disable_quic: false
-  list_update_enabled: true
-  update_interval: "24h"
-  component_update_check_enabled: true
-  component_update_check_interval: "24h"
-  latency_test_url: "https://www.gstatic.com/generate_204"
-  download_lists_via_proxy: false
-  download_components_via_proxy: false
-  dont_touch_dhcp: false
-  config_path: "/opt/etc/hydravpn-router/sing-box/config.json"
-  cache_path: "/opt/tmp/hydravpn-router/cache.db"
+    - "${LAN_IF}"
+  config_path: "${CONFIG_DIR}/sing-box/config.json"
+  cache_path: "${RUNTIME_DIR:-/tmp/hydravpn-router}/cache.db"
   log_level: "warn"
-  exclude_ntp: false
-  shutdown_correctly: false
 
-sections:
-  - name: "my-subscription"
-    label: "My VPN"
-    enabled: false
-    action: "connection"
-    selector_proxy_links: []
-    community_lists: []
-    rule_set: []
-
-interfaces:
-  - section: "my-subscription"
-    name: "tun0"
-    domain_resolver_enabled: true
-
+sections: []
 subscription_urls: []
-
-urltests: []
-
-servers: []
-
-rules: []
-
-rule_sets: []
-
-community_lists: []
 EOF
-        log_ok "Default config created"
-    fi
-    
-    # Create init script if not exists
-    if [ ! -f "$SERVICE_CMD" ]; then
-        cat > "$SERVICE_CMD" << 'EOF'
+    chmod 0600 "$CONFIG_DIR/config.yaml"
+    log_ok "Default config created: $CONFIG_DIR/config.yaml"
+}
+
+install_service() {
+    case "$PLATFORM" in
+        openwrt)
+            cat > "$SERVICE" <<'EOF'
+#!/bin/sh /etc/rc.common
+# HydraVPN for Router - procd init script
+
+START=99
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/hydravpn-router
+CONFIG_FILE=/etc/hydravpn-router/config.yaml
+
+start_service() {
+    procd_open_instance
+    procd_set_param command $PROG start -c $CONFIG_FILE
+    procd_set_param respawn 3600 5 5
+    procd_set_param term_timeout 20
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param file $CONFIG_FILE
+    procd_close_instance
+}
+
+reload_service() {
+    $PROG reload -c $CONFIG_FILE
+}
+EOF
+            chmod 0755 "$SERVICE"
+            "$SERVICE" enable
+            ;;
+        keenetic-entware)
+            cat > "$SERVICE" <<'EOF'
 #!/bin/sh
 ENABLED=yes
 PROCS=hydravpn-router
-ARGS="start -c /opt/etc/hydravpn-router/config.yaml"
+ARGS="start -c /opt/etc/hydravpn-router/config.yaml --runtime-dir /opt/var/run/hydravpn-router"
 PREARGS=""
 DESC="HydraVPN for Router"
-PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 . /opt/etc/init.d/rc.func
 EOF
-        chmod +x "$SERVICE_CMD"
-    fi
-    
-    $SERVICE_CMD enable
-    $SERVICE_CMD start
-    log_ok "KeeneticOS Entware installation completed"
-}
-
-# Install KeeneticOS KNP (manual download)
-install_keenetic_knp() {
-    log_info "Installing KeeneticOS KNP package..."
-    
-    KNP_URL="${RELEASE_BASE}/${LATEST_VERSION}/hydravpn-router_${LATEST_VERSION}.knp"
-    log_info "Download KNP from: $KNP_URL"
-    log_warn "Please install manually via Web UI:"
-    log_warn "  1. Download: wget '$KNP_URL' -O /tmp/hydravpn-router.knp"
-    log_warn "  2. Web UI: http://keenetic.local -> System -> Components -> Add Component"
-    log_warn "  3. Select file: /tmp/hydravpn-router.knp"
-    log_warn "  4. Configure: http://keenetic.local/hydravpn-router"
-}
-
-# Install MikroTik Docker
-install_mikrotik_docker() {
-    log_info "Installing on MikroTik (Docker)..."
-    
-    # Check if container feature is enabled
-    if ! /system package print | grep -q "container"; then
-        log_err "Container package not installed. Enable in: System -> Packages -> Container"
-        return 1
-    fi
-    
-    # Configure registry
-    /container config set registry-url=https://registry-1.docker.io tmpdir=disk1/pull
-    
-    # Create veth interface
-    if ! /interface veth print | grep -q "veth-hydravpn"; then
-        /interface veth add name=veth-hydravpn address=172.17.0.2/24 gateway=172.17.0.1
-        log_ok "Created veth-hydravpn interface"
-    fi
-    
-    # Create mount directories
-    /file mkdir name=disk1/hydravpn-config 2>/dev/null || true
-    /file mkdir name=disk1/hydravpn-cache 2>/dev/null || true
-    
-    # Add container
-    /container add name=hydravpn-router \
-        image=ghcr.io/chistovik92/hydravpn-router:${LATEST_VERSION} \
-        interface=veth-hydravpn \
-        mounts=disk1/hydravpn-config:/etc/hydravpn-router,disk1/hydravpn-cache:/tmp/hydravpn-router \
-        dns=77.88.8.8,77.88.8.1 \
-        logging=yes \
-        envlist="TZ=Europe/Moscow"
-    
-    /container start hydravpn-router
-    
-    # Add NAT for Web UI
-    /ip firewall nat add chain=dstnat action=dst-nat to-addresses=172.17.0.2 to-ports=8080 protocol=tcp dst-port=8080 comment="HydraVPN Web UI" 2>/dev/null || true
-    
-    log_ok "MikroTik Docker installation completed"
-    log_info "Web UI: http://<router-ip>:8080"
-}
-
-# Install MikroTik NPK
-install_mikrotik_npk() {
-    log_info "Installing MikroTik NPK package..."
-    
-    NPK_URL="${RELEASE_BASE}/${LATEST_VERSION}/hydravpn-router-${LATEST_VERSION}.npk"
-    
-    # Download NPK
-    /tool fetch url="$NPK_URL" dst-path="/hydravpn-router-${LATEST_VERSION}.npk" mode=https
-    
-    # Install
-    /system package install file-name=hydravpn-router-${LATEST_VERSION}.npk
-    
-    log_warn "Reboot required! Run: /system reboot"
-}
-
-# Install Generic Linux Binary
-install_linux_binary() {
-    log_info "Installing Linux binary..."
-    
-    BINARY_URL="${RELEASE_BASE}/${LATEST_VERSION}/hydravpn-router-${LATEST_VERSION}-linux-${ARCH}"
-    
-    # Download binary
-    log_info "Downloading: $BINARY_URL"
-    curl -fsSL "$BINARY_URL" -o /usr/local/bin/hydravpn-router
-    chmod +x /usr/local/bin/hydravpn-router
-    
-    # Create config directory
-    mkdir -p "$CONFIG_DIR"
-    if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
-        curl -fsSL "${RAW_BASE}/configs/config.yaml" -o "$CONFIG_DIR/config.yaml" 2>/dev/null || \
-        cat > "$CONFIG_DIR/config.yaml" << 'EOF'
-settings:
-  config_version: "1.0.0"
-  dns_type: "udp"
-  dns_server:
-    - "77.88.8.8"
-    - "77.88.8.1"
-  bootstrap_dns_server:
-    - "77.88.8.8"
-    - "77.88.8.1"
-  dns_check_interval: "10s"
-  dns_recovery_check_interval: "60s"
-  dns_check_timeout: "2s"
-  dns_rewrite_ttl: 60
-  dns_strategy: "prefer_ipv4"
-  dns_detour_enabled: false
-  source_network_interfaces:
-    - "eth0"
-  enable_output_network_interface: false
-  enable_badwan_interface_monitoring: false
-  enable_yacd: false
-  disable_quic: false
-  list_update_enabled: true
-  update_interval: "24h"
-  component_update_check_enabled: true
-  component_update_check_interval: "24h"
-  latency_test_url: "https://www.gstatic.com/generate_204"
-  download_lists_via_proxy: false
-  download_components_via_proxy: false
-  dont_touch_dhcp: false
-  config_path: "/etc/hydravpn-router/sing-box/config.json"
-  cache_path: "/tmp/hydravpn-router/cache.db"
-  log_level: "warn"
-  exclude_ntp: false
-  shutdown_correctly: false
-
-sections:
-  - name: "my-subscription"
-    label: "My VPN"
-    enabled: false
-    action: "connection"
-    selector_proxy_links: []
-    community_lists: []
-    rule_set: []
-
-interfaces:
-  - section: "my-subscription"
-    name: "tun0"
-    domain_resolver_enabled: true
-
-subscription_urls: []
-
-urltests: []
-
-servers: []
-
-rules: []
-
-rule_sets: []
-
-community_lists: []
-EOF
-        log_ok "Default config created"
-    fi
-    
-    # Create systemd service
-    if command -v systemctl >/dev/null 2>&1; then
-        cat > /etc/systemd/system/hydravpn-router.service << EOF
+            chmod 0755 "$SERVICE"
+            ;;
+        linux)
+            if command -v systemctl >/dev/null 2>&1; then
+                cat > /etc/systemd/system/hydravpn-router.service <<EOF
 [Unit]
 Description=HydraVPN for Router
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hydravpn-router start -c /etc/hydravpn-router/config.yaml
+ExecStart=${BIN} start -c ${CONFIG_DIR}/config.yaml --runtime-dir ${RUNTIME_DIR}
+ExecReload=${BIN} reload -c ${CONFIG_DIR}/config.yaml --runtime-dir ${RUNTIME_DIR}
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload
-        systemctl enable hydravpn-router
-        systemctl start hydravpn-router
-        log_ok "Systemd service created and started"
-    fi
-    
-    log_ok "Linux binary installation completed"
-}
-
-# Install Docker (generic)
-install_docker() {
-    log_info "Installing Docker container..."
-    
-    docker pull ghcr.io/chistovik92/hydravpn-router:${LATEST_VERSION}
-    docker pull ghcr.io/chistovik92/hydravpn-router:latest
-    
-    log_ok "Docker images pulled"
-    log_info "Run container with:"
-    log_info "  docker run -d --name hydravpn-router \\"
-    log_info "    --cap-add=NET_ADMIN --cap-add=SYS_RESOURCE \\"
-    log_info "    -v /etc/hydravpn-router:/etc/hydravpn-router \\"
-    log_info "    -v /tmp/hydravpn-router:/tmp/hydravpn-router \\"
-    log_info "    --network host \\"
-    log_info "    ghcr.io/chistovik92/hydravpn-router:${LATEST_VERSION}"
-}
-
-# Main install function
-do_install() {
-    case "$PLATFORM" in
-        openwrt)
-            install_openwrt
-            ;;
-        keenetic-entware)
-            install_keenetic_entware
-            ;;
-        keenetic-knp)
-            install_keenetic_knp
-            ;;
-        mikrotik)
-            # Ask which method
-            if [ "$AUTO_YES" = "1" ] || [ "$INSTALL_METHOD" = "docker" ]; then
-                install_mikrotik_docker
-            elif [ "$INSTALL_METHOD" = "npk" ]; then
-                install_mikrotik_npk
+                systemctl daemon-reload
+                systemctl enable hydravpn-router >/dev/null
             else
-                log_info "Choose installation method for MikroTik:"
-                log_info "  1) Docker (recommended for RouterOS 7+)"
-                log_info "  2) NPK (native package)"
-                printf "Choice [1/2]: "
-                read -r CHOICE
-                case "$CHOICE" in
-                    1) install_mikrotik_docker ;;
-                    2) install_mikrotik_npk ;;
-                    *) log_err "Invalid choice"; exit 1 ;;
-                esac
+                log_warn "systemd not found: start manually with '$BIN start -c $CONFIG_DIR/config.yaml'"
             fi
-            ;;
-        docker)
-            install_docker
-            ;;
-        linux)
-            install_linux_binary
-            ;;
-        *)
-            log_err "Unsupported platform: $PLATFORM"
-            exit 1
             ;;
     esac
 }
 
-# Show help
-show_help() {
-    cat << EOF
-HydraVPN for Router - Universal Auto-Install Script
+service_ctl() {
+    case "$PLATFORM" in
+        openwrt|keenetic-entware) [ -x "$SERVICE" ] && "$SERVICE" "$1" || true ;;
+        linux) command -v systemctl >/dev/null 2>&1 && systemctl "$1" hydravpn-router || true ;;
+    esac
+}
 
-Usage: $0 [OPTIONS]
+# pkg_installed NAME - OpenWrt package check for opkg and apk
+pkg_installed() {
+    if command -v apk >/dev/null 2>&1; then
+        apk info -e "$1" >/dev/null 2>&1
+    else
+        opkg list-installed "$1" 2>/dev/null | grep -q "^$1 "
+    fi
+}
+
+install_dependencies() {
+    case "$PLATFORM" in
+        openwrt)
+            missing=""
+            for pkg in sing-box nftables kmod-nft-tproxy ip-full; do
+                pkg_installed "$pkg" || missing="$missing $pkg"
+            done
+            [ -z "$missing" ] && return 0
+            log_info "Installing dependencies:$missing"
+            if command -v apk >/dev/null 2>&1; then
+                # shellcheck disable=SC2086
+                apk update && apk add $missing || log_warn "Could not install:$missing"
+            else
+                # shellcheck disable=SC2086
+                opkg update && opkg install $missing || log_warn "Could not install:$missing"
+            fi
+            ;;
+        keenetic-entware)
+            command -v sing-box >/dev/null 2>&1 || \
+                { opkg update && opkg install sing-box-go; } || \
+                log_warn "sing-box is not installed; install it from Entware before starting the service"
+            ;;
+        linux)
+            command -v sing-box >/dev/null 2>&1 || \
+                log_warn "sing-box is not installed: see https://sing-box.sagernet.org/installation/package-manager/"
+            ;;
+    esac
+}
+
+do_install_binary() {
+    download_binary
+    was_running=0
+    if [ -x "$BIN" ]; then
+        service_ctl stop
+        was_running=1
+    fi
+    mv -f "$TMP_BIN" "$BIN"
+    log_ok "Installed $BIN ($LATEST_VERSION)"
+
+    install_dependencies
+    write_default_config
+    install_service
+
+    if [ "$was_running" = "1" ] || [ "$UPDATE" = "0" ]; then
+        service_ctl start
+    fi
+}
+
+do_install_docker() {
+    command -v docker >/dev/null 2>&1 || die "docker is not installed"
+    docker pull "${IMAGE}:${LATEST_VERSION}"
+    log_ok "Image pulled: ${IMAGE}:${LATEST_VERSION}"
+    log_info "Run it with:"
+    log_info "  docker run -d --name hydravpn-router --restart unless-stopped \\"
+    log_info "    --network host --cap-add NET_ADMIN --cap-add NET_RAW \\"
+    log_info "    -v /etc/hydravpn-router:/etc/hydravpn-router \\"
+    log_info "    ${IMAGE}:${LATEST_VERSION}"
+}
+
+# ---------------------------------------------------------------- main
+
+show_help() {
+    cat <<EOF
+HydraVPN for Router - install / update script
+
+Usage: install.sh [OPTIONS]
 
 Options:
-  -y, --yes          Auto-confirm install (non-interactive)
-  -m, --method       Install method for MikroTik: docker|npk
-  -h, --help         Show this help
+  -y, --yes            Do not ask for confirmation
+  -v, --version X.Y.Z  Install a specific version instead of the latest
+  -m, --method METHOD  binary (default) or docker
+  -u, --update         Update an existing installation only
+  -c, --check-only     Only report whether an update is available
+  -f, --force          Reinstall even if the version is current
+  -h, --help           Show this help
 
-Examples:
-  # Interactive install
-  $0
-  
-  # Non-interactive (for automation)
-  $0 --yes
-  
-  # MikroTik with specific method
-  $0 --method docker
-  $0 --method npk
-
-Quick install (one-liner):
-  curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-  wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-
-Supported platforms:
-  - OpenWRT (opkg repository, auto-detects architecture)
-  - KeeneticOS (Entware opkg + KNP manual)
-  - MikroTik RouterOS (Docker + NPK)
-  - Generic Linux (binary + systemd)
-  - Docker/Podman
-
-The script automatically:
-  1. Detects your platform
-  2. Fetches latest version from GitHub
-  3. Installs appropriate package
-  4. Creates default configuration
-  5. Starts the service
-
+Supported: OpenWrt, Keenetic (Entware), generic Linux (systemd), Docker.
+MikroTik RouterOS: see INSTALL.md (container).
 EOF
 }
 
-# Main
 main() {
-    AUTO_YES=0
-    INSTALL_METHOD=""
-    
+    AUTO_YES=0; WANT_VERSION=""; METHOD="binary"; UPDATE=0; CHECK_ONLY=0; FORCE=0
+
     while [ $# -gt 0 ]; do
         case "$1" in
             -y|--yes) AUTO_YES=1 ;;
-            -m|--method) INSTALL_METHOD="$2"; shift ;;
+            -v|--version) [ $# -ge 2 ] || die "$1 needs a value"; WANT_VERSION="$2"; shift ;;
+            -m|--method) [ $# -ge 2 ] || die "$1 needs a value"; METHOD="$2"; shift ;;
+            -u|--update) UPDATE=1 ;;
+            -c|--check-only) CHECK_ONLY=1 ;;
+            -f|--force) FORCE=1 ;;
             -h|--help) show_help; exit 0 ;;
             *) log_err "Unknown option: $1"; show_help; exit 1 ;;
         esac
         shift
     done
-    
-    printf "\n${BLUE}=== HydraVPN for Router Auto-Install ===${NC}\n"
-    printf "Repository: ${REPO_OWNER}/${REPO_NAME}\n\n"
-    
+    case "$METHOD" in binary|docker) ;; *) die "Unknown method: $METHOD" ;; esac
+
+    printf "\n${BLUE}=== HydraVPN for Router ===${NC}\n\n"
+
     detect_platform
-    get_latest_version || exit 1
-    check_installed
-    ask_confirm
-    do_install
-    
-    # Verify
-    if check_installed; then
-        log_ok "Installation verified: v$INSTALLED_VERSION"
-    else
-        log_warn "Installation completed but verification failed"
+    get_latest_version
+    get_installed_version
+
+    if [ "$PLATFORM" = "docker" ]; then
+        [ "$CHECK_ONLY" = "1" ] && { log_info "Latest image: ${IMAGE}:${LATEST_VERSION}"; exit 0; }
+        ask "Pull ${IMAGE}:${LATEST_VERSION}?" || exit 0
+        do_install_docker
+        exit 0
     fi
-    
-    printf "\n${GREEN}=== Next Steps ===${NC}\n"
-    printf "1. Edit config: ${CONFIG_DIR}/config.yaml\n"
-    printf "2. Add subscription URL in sections[0].subscription_urls[0].url\n"
-    printf "3. Restart: ${SERVICE_CMD:-hydravpn-router} restart\n"
-    printf "4. Check status: hydravpn-router status\n"
-    printf "5. Run diagnostics: hydravpn-router check all\n"
-    printf "\nWeb UI:\n"
-    case "$PLATFORM" in
-        openwrt) printf "  http://router.ip/cgi-bin/luci/admin/services/hydravpn-router\n" ;;
-        keenetic-entware) printf "  http://keenetic.local/hydravpn-router\n" ;;
-        mikrotik) printf "  http://<container-ip>:8080 (Docker) or WinBox\n" ;;
-        *) printf "  http://localhost:8080\n" ;;
-    esac
-    printf "\nDocs: https://github.com/Chistovik92/HydraVPNforRouters/blob/main/INSTALL.md\n"
+
+    if [ "$UPDATE" = "1" ] && [ -z "$INSTALLED_VERSION" ]; then
+        die "HydraVPN for Router is not installed. Run install.sh without --update."
+    fi
+
+    if [ -n "$INSTALLED_VERSION" ] && [ "$FORCE" = "0" ] && ! version_gt "$LATEST_VERSION" "$INSTALLED_VERSION"; then
+        log_ok "Already up to date ($INSTALLED_VERSION)"
+        exit 0
+    fi
+
+    if [ "$CHECK_ONLY" = "1" ]; then
+        if [ -n "$INSTALLED_VERSION" ]; then
+            log_warn "Update available: $INSTALLED_VERSION -> $LATEST_VERSION"
+        else
+            log_info "Not installed; latest version is $LATEST_VERSION"
+        fi
+        exit 0
+    fi
+
+    if [ -n "$INSTALLED_VERSION" ]; then
+        ask "Update HydraVPN for Router $INSTALLED_VERSION -> $LATEST_VERSION?" || { log_info "Cancelled"; exit 0; }
+    else
+        ask "Install HydraVPN for Router $LATEST_VERSION?" || { log_info "Cancelled"; exit 0; }
+    fi
+
+    do_install_binary
+
+    get_installed_version
+    if [ "$INSTALLED_VERSION" = "$LATEST_VERSION" ]; then
+        log_ok "HydraVPN for Router $INSTALLED_VERSION is installed"
+    else
+        log_warn "Installed version '$INSTALLED_VERSION' differs from expected $LATEST_VERSION"
+    fi
+
+    printf "\n${GREEN}=== Next steps ===${NC}\n"
+    printf "1. Edit the config:   %s/config.yaml (add subscription_urls and sections)\n" "$CONFIG_DIR"
+    printf "2. Apply changes:     %s reload\n" "$BIN"
+    printf "3. Status:            %s status\n" "$BIN"
+    printf "4. Diagnostics:       %s check all\n" "$BIN"
+    printf "\nDocs: https://github.com/%s/%s/blob/main/INSTALL.md\n" "$REPO_OWNER" "$REPO_NAME"
 }
 
 main "$@"

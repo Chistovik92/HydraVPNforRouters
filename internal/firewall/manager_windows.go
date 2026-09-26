@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package firewall
 
@@ -16,23 +15,19 @@ import (
 // Manager управляет правилами файрвола для маршрутизации трафика (Windows заглушка)
 // Manager manages firewall rules for traffic routing (Windows stub)
 type Manager struct {
-	mu         sync.RWMutex
-	config     *config.Config
-	ctx        context.Context
-	cancel     context.CancelFunc
-	started    bool
-	onLog      func(level, message string)
-	
-	backend    FirewallBackend
-	tableName  string
-	chainName  string
-	markValue  string
-	
-	// Rule tracking / Отслеживание правил
-	appliedRules map[string]bool
-	interfaces   []string
-	sourceIPs    []string
-	
+	mu      sync.RWMutex
+	config  *config.Config
+	started bool
+	onLog   func(level, message string)
+
+	backend   FirewallBackend
+	tableName string
+	chainName string
+	markValue string
+
+	interfaces []string
+	sourceIPs  []string
+
 	// Stats / Статистика
 	rulesApplied int
 	rulesFailed  int
@@ -42,22 +37,17 @@ type Manager struct {
 // NewManager создает новый менеджер файрвола (Windows заглушка)
 // NewManager creates a new firewall manager (Windows stub)
 func NewManager(opts Options) *Manager {
-	ctx, cancel := context.WithCancel(context.Background())
-	
 	m := &Manager{
-		config:       opts.Config,
-		ctx:          ctx,
-		cancel:       cancel,
-		onLog:        opts.OnLog,
-		tableName:    "hydravpn",
-		chainName:    "hydravpn-chain",
-		markValue:    "0x08000000",
-		appliedRules: make(map[string]bool),
-		interfaces:   opts.Config.Settings.SourceNetworkInterfaces,
+		config:     opts.Config,
+		onLog:      opts.OnLog,
+		tableName:  TableName,
+		chainName:  ChainName,
+		markValue:  MarkValue,
+		interfaces: opts.Config.Settings.SourceNetworkInterfaces,
 	}
-	
+
 	m.backend = FirewallBackendWindows // Будет использовать Windows Firewall / Will use Windows Firewall
-	
+
 	return m
 }
 
@@ -65,11 +55,11 @@ func NewManager(opts Options) *Manager {
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.started {
 		return nil
 	}
-	
+
 	m.log("info", "Starting firewall manager (Windows stub)")
 	m.started = true
 	m.log("info", "Firewall manager started (Windows - limited functionality)")
@@ -80,14 +70,13 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if !m.started {
 		return nil
 	}
-	
+
 	m.log("info", "Stopping firewall manager")
 	m.started = false
-	m.cancel()
 	m.log("info", "Firewall manager stopped")
 	return nil
 }
@@ -96,7 +85,7 @@ func (m *Manager) Stop() error {
 func (m *Manager) Reload(cfg *config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.config = cfg
 	m.interfaces = cfg.Settings.SourceNetworkInterfaces
 	m.log("info", "Firewall configuration reloaded (Windows stub)")
@@ -107,20 +96,19 @@ func (m *Manager) Reload(cfg *config.Config) error {
 func (m *Manager) GetStatus() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return map[string]interface{}{
-		"running":        m.started,
-		"backend":        "windows",
-		"table_name":     m.tableName,
-		"chain_name":     m.chainName,
-		"mark_value":     m.markValue,
-		"interfaces":     m.interfaces,
-		"source_ips":     m.sourceIPs,
-		"rules_applied":  m.rulesApplied,
-		"rules_failed":   m.rulesFailed,
-		"last_apply":     m.lastApply.Format(time.RFC3339),
-		"active_rules":   len(m.appliedRules),
-		"note":           "Windows firewall management not fully implemented",
+		"running":       m.started,
+		"backend":       "windows",
+		"table_name":    m.tableName,
+		"chain_name":    m.chainName,
+		"mark_value":    m.markValue,
+		"interfaces":    m.interfaces,
+		"source_ips":    m.sourceIPs,
+		"rules_applied": m.rulesApplied,
+		"rules_failed":  m.rulesFailed,
+		"last_apply":    "",
+		"note":          "Windows firewall management not fully implemented",
 	}
 }
 
@@ -155,5 +143,10 @@ func (m *Manager) RemoveSourceIP(ip string) error {
 			break
 		}
 	}
+	return nil
+}
+
+// SetNFQueue is a no-op on Windows (stub)
+func (m *Manager) SetNFQueue(opts *NFQueueOptions) error {
 	return nil
 }

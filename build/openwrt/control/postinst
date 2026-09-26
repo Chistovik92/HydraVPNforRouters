@@ -1,0 +1,5 @@
+#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+/etc/init.d/hydravpn-router enable
+/etc/init.d/hydravpn-router restart
+exit 0

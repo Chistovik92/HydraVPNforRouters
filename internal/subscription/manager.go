@@ -2,7 +2,6 @@ package subscription
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,66 +9,76 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/pkg/version"
+)
+
+const (
+	defaultUpdateInterval = 24 * time.Hour
+	retryInterval         = 5 * time.Minute
+	maxBodySize           = 10 << 20
 )
 
 // Manager manages subscription fetching and parsing
 type Manager struct {
-	mu           sync.RWMutex
-	config       *config.Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	started      bool
-	onLog        func(level, message string)
-	wg           sync.WaitGroup
-	
+	mu      sync.RWMutex
+	config  *config.Config
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started bool
+	onLog   func(level, message string)
+	wg      sync.WaitGroup
+
 	// State
 	subscriptions map[string]*SubscriptionState
 	cacheDir      string
 	client        *http.Client
-	
+
 	// Stats
-	lastUpdate    time.Time
-	updateCount   int
-	errorCount    int
-	lastError     string
+	lastUpdate  time.Time
+	updateCount int
+	errorCount  int
+	lastError   string
 }
 
 // SubscriptionState tracks a subscription's state
 type SubscriptionState struct {
-	Section       string
-	URL           string
-	LastUpdate    time.Time
-	NextUpdate    time.Time
-	LastError     string
-	Outbounds     []OutboundInfo
-	Metadata      *SubscriptionMetadata
-	UpdateEnabled bool
+	Section        string
+	URL            string
+	LastUpdate     time.Time
+	NextUpdate     time.Time
+	LastError      string
+	Outbounds      []OutboundInfo
+	Metadata       *SubscriptionMetadata
+	UpdateEnabled  bool
 	UpdateInterval time.Duration
 }
 
 // OutboundInfo represents a parsed outbound
 type OutboundInfo struct {
-	Name       string
-	Tag        string
-	Type       string
-	Server     string
-	Port       int
-	UUID       string
-	Password   string
-	Method     string
-	Flow       string
-	Transport  string
-	Security   string
-	SNI        string
+	Name        string
+	Tag         string
+	Type        string
+	Server      string
+	Port        int
+	UUID        string
+	Password    string
+	Method      string
+	Flow        string
+	Transport   string
+	Security    string
+	SNI         string
 	Fingerprint string
 	PublicKey   string
 	ShortID     string
+	Path        string
+	Host        string
 	Extra       map[string]string
 }
 
@@ -107,66 +116,86 @@ type Options struct {
 
 // NewManager creates a new subscription manager
 func NewManager(opts Options) *Manager {
-	ctx, cancel := context.WithCancel(context.Background())
-	
-	m := &Manager{
+	return &Manager{
 		config:        opts.Config,
-		ctx:           ctx,
-		cancel:        cancel,
 		onLog:         opts.OnLog,
 		subscriptions: make(map[string]*SubscriptionState),
-		cacheDir:      "/etc/podkop-plus/subscription-cache",
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		},
+		cacheDir:      config.DefaultConfigDir + "/subscription-cache",
+		// TLS certificates are verified: subscriptions carry credentials.
+		client: &http.Client{Timeout: 30 * time.Second},
 	}
-	
-	os.MkdirAll(m.cacheDir, 0755)
-	
-	return m
+}
+
+func key(section, u string) string { return section + ":" + u }
+
+// syncLocked makes the subscription list match the configuration.
+func (m *Manager) syncLocked(cfg *config.Config) {
+	wanted := make(map[string]bool)
+	for _, subURL := range cfg.SubscriptionURLs {
+		if subURL.URL == "" {
+			continue
+		}
+		k := key(subURL.Section, subURL.URL)
+		wanted[k] = true
+
+		interval := subURL.SubscriptionUpdateInterval
+		if interval <= 0 {
+			interval = cfg.Settings.UpdateInterval
+		}
+		if interval <= 0 {
+			interval = defaultUpdateInterval
+		}
+
+		state, exists := m.subscriptions[k]
+		if !exists {
+			state = &SubscriptionState{Section: subURL.Section, URL: subURL.URL}
+			m.subscriptions[k] = state
+		}
+		state.UpdateEnabled = subURL.SubscriptionUpdateEnabled
+		state.UpdateInterval = interval
+	}
+	for k := range m.subscriptions {
+		if !wanted[k] {
+			delete(m.subscriptions, k)
+		}
+	}
 }
 
 // Start starts the subscription manager
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.started {
 		return nil
 	}
-	
+
+	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.started = true
-	m.log("info", "Subscription manager started")
-	
-	// Load cached subscriptions
-	m.loadCache()
-	
-	// Start update loop
+	m.loadCacheLocked()
+	m.syncLocked(m.config)
+	m.log("info", "Subscription manager started (%d subscriptions)", len(m.subscriptions))
+
 	m.wg.Add(1)
-	go m.updateLoop()
-	
+	go m.updateLoop(m.ctx)
+
 	return nil
 }
 
 // Stop stops the subscription manager
 func (m *Manager) Stop() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	
 	if !m.started {
+		m.mu.Unlock()
 		return nil
 	}
-	
 	m.started = false
 	m.cancel()
-	
-	// Save cache
-	m.saveCache()
-	
+	m.mu.Unlock()
+
+	// Wait without holding the lock: in-flight updates take it too.
 	m.wg.Wait()
+	m.saveCache()
 	m.log("info", "Subscription manager stopped")
 	return nil
 }
@@ -175,29 +204,9 @@ func (m *Manager) Stop() error {
 func (m *Manager) Reload(cfg *config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.config = cfg
-	
-	// Update subscription states
-	for _, subURL := range cfg.SubscriptionURLs {
-		key := subURL.Section + ":" + subURL.URL
-		if state, exists := m.subscriptions[key]; exists {
-			state.UpdateEnabled = subURL.SubscriptionUpdateEnabled
-			state.UpdateInterval = subURL.SubscriptionUpdateInterval
-			if state.NextUpdate.IsZero() {
-				state.NextUpdate = time.Now()
-			}
-		} else {
-			m.subscriptions[key] = &SubscriptionState{
-				Section:        subURL.Section,
-				URL:            subURL.URL,
-				UpdateEnabled:  subURL.SubscriptionUpdateEnabled,
-				UpdateInterval: subURL.SubscriptionUpdateInterval,
-				NextUpdate:     time.Now(),
-			}
-		}
-	}
-	
+	m.syncLocked(cfg)
 	m.log("info", "Subscription configuration reloaded")
 	return nil
 }
@@ -206,28 +215,35 @@ func (m *Manager) Reload(cfg *config.Config) error {
 func (m *Manager) GetStatus() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	subs := make(map[string]interface{})
 	for k, v := range m.subscriptions {
 		subs[k] = map[string]interface{}{
 			"section":        v.Section,
 			"url":            v.URL,
-			"last_update":    v.LastUpdate.Format(time.RFC3339),
-			"next_update":    v.NextUpdate.Format(time.RFC3339),
+			"last_update":    formatTime(v.LastUpdate),
+			"next_update":    formatTime(v.NextUpdate),
 			"last_error":     v.LastError,
 			"outbounds":      len(v.Outbounds),
 			"update_enabled": v.UpdateEnabled,
 		}
 	}
-	
+
 	return map[string]interface{}{
-		"running":      m.started,
+		"running":       m.started,
 		"subscriptions": subs,
-		"last_update":  m.lastUpdate.Format(time.RFC3339),
-		"update_count": m.updateCount,
-		"error_count":  m.errorCount,
-		"last_error":   m.lastError,
+		"last_update":   formatTime(m.lastUpdate),
+		"update_count":  m.updateCount,
+		"error_count":   m.errorCount,
+		"last_error":    m.lastError,
 	}
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 // GetStatusJSON returns status as JSON
@@ -240,7 +256,7 @@ func (m *Manager) GetStatusJSON() string {
 func (m *Manager) GetOutbounds(section string) []OutboundInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	var outbounds []OutboundInfo
 	for _, state := range m.subscriptions {
 		if state.Section == section {
@@ -251,100 +267,100 @@ func (m *Manager) GetOutbounds(section string) []OutboundInfo {
 }
 
 // ForceUpdate forces an update of a specific subscription
-func (m *Manager) ForceUpdate(section, url string) error {
-	key := section + ":" + url
+func (m *Manager) ForceUpdate(section, u string) error {
 	m.mu.RLock()
-	state, exists := m.subscriptions[key]
+	state, exists := m.subscriptions[key(section, u)]
+	ctx := m.ctx
 	m.mu.RUnlock()
-	
+
 	if !exists {
-		return fmt.Errorf("subscription not found: %s", key)
+		return fmt.Errorf("subscription not found: %s", key(section, u))
 	}
-	
-	return m.updateSubscription(state)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return m.updateSubscription(ctx, state)
 }
 
-// updateLoop periodically updates subscriptions
-func (m *Manager) updateLoop() {
+// updateLoop fetches due subscriptions right away and then every minute.
+func (m *Manager) updateLoop(ctx context.Context) {
 	defer m.wg.Done()
-	
+
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for {
+		m.checkUpdates(ctx)
 		select {
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.checkUpdates()
 		}
 	}
 }
 
-// checkUpdates checks for subscriptions that need updating
-func (m *Manager) checkUpdates() {
+// checkUpdates updates subscriptions that are due. A subscription that was
+// never fetched is fetched once even if periodic updates are disabled.
+func (m *Manager) checkUpdates(ctx context.Context) {
 	m.mu.RLock()
 	var toUpdate []*SubscriptionState
 	now := time.Now()
 	for _, state := range m.subscriptions {
-		if state.UpdateEnabled && now.After(state.NextUpdate) {
+		if !now.Before(state.NextUpdate) && (state.UpdateEnabled || state.LastUpdate.IsZero()) {
 			toUpdate = append(toUpdate, state)
 		}
 	}
 	m.mu.RUnlock()
-	
+
 	for _, state := range toUpdate {
-		m.updateSubscription(state)
+		if ctx.Err() != nil {
+			return
+		}
+		m.updateSubscription(ctx, state)
 	}
 }
 
 // updateSubscription fetches and parses a subscription
-func (m *Manager) updateSubscription(state *SubscriptionState) error {
+func (m *Manager) updateSubscription(ctx context.Context, state *SubscriptionState) error {
 	m.log("info", "Updating subscription: %s", state.URL)
-	
-	req, err := http.NewRequestWithContext(m.ctx, "GET", state.URL, nil)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, state.URL, nil)
 	if err != nil {
 		return m.setError(state, fmt.Errorf("create request: %w", err))
 	}
-	
-	// Set headers
 	req.Header.Set("User-Agent", m.getUserAgent(state))
-	
+
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return m.setError(state, fmt.Errorf("fetch: %w", err))
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return m.setError(state, fmt.Errorf("HTTP %d", resp.StatusCode))
 	}
-	
-	body, err := io.ReadAll(resp.Body)
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
 		return m.setError(state, fmt.Errorf("read body: %w", err))
 	}
-	
-	// Parse subscription
-	outbounds, metadata, err := m.parseSubscription(string(body))
+
+	outbounds, err := ParseSubscription(string(body))
 	if err != nil {
 		return m.setError(state, fmt.Errorf("parse: %w", err))
 	}
-	
-	// Update state
+
 	m.mu.Lock()
-	state.LastUpdate = time.Now()
-	state.NextUpdate = time.Now().Add(state.UpdateInterval)
+	now := time.Now()
+	state.LastUpdate = now
+	state.NextUpdate = now.Add(state.UpdateInterval)
 	state.Outbounds = outbounds
-	state.Metadata = metadata
 	state.LastError = ""
-	m.lastUpdate = time.Now()
+	m.lastUpdate = now
 	m.updateCount++
 	m.mu.Unlock()
-	
-	// Save cache
+
 	m.saveCache()
-	
 	m.log("info", "Subscription updated: %s (%d outbounds)", state.URL, len(outbounds))
 	return nil
 }
@@ -353,107 +369,110 @@ func (m *Manager) updateSubscription(state *SubscriptionState) error {
 func (m *Manager) setError(state *SubscriptionState, err error) error {
 	m.mu.Lock()
 	state.LastError = err.Error()
-	state.NextUpdate = time.Now().Add(5 * time.Minute) // Retry sooner on error
+	state.NextUpdate = time.Now().Add(retryInterval)
 	m.errorCount++
 	m.lastError = err.Error()
 	m.mu.Unlock()
-	
+
 	m.log("error", "Subscription update failed: %s - %v", state.URL, err)
 	return err
 }
 
 // getUserAgent returns the User-Agent header
 func (m *Manager) getUserAgent(state *SubscriptionState) string {
-	if m.config != nil {
-		for _, subURL := range m.config.SubscriptionURLs {
-			if subURL.URL == state.URL {
-				if subURL.AutoUserAgent {
-					return "PodkopPlus/" + "1.0.0"
-				}
-				if subURL.UserAgent != "" {
-					return subURL.UserAgent
-				}
+	m.mu.RLock()
+	cfg := m.config
+	m.mu.RUnlock()
+	if cfg != nil {
+		for _, subURL := range cfg.SubscriptionURLs {
+			if subURL.URL == state.URL && !subURL.AutoUserAgent && subURL.UserAgent != "" {
+				return subURL.UserAgent
 			}
 		}
 	}
-	return "PodkopPlus/1.0.0"
+	return version.UserAgent()
 }
 
-// parseSubscription parses a subscription response
-func (m *Manager) parseSubscription(content string) ([]OutboundInfo, *SubscriptionMetadata, error) {
-	// Try base64 decode first
-	decoded := content
-	if isBase64(content) {
-		data, err := base64.StdEncoding.DecodeString(content)
-		if err == nil {
+// ParseSubscription parses a subscription body: a list of proxy URIs or
+// sing-box JSON outbounds, optionally base64-encoded as a whole.
+func ParseSubscription(content string) ([]OutboundInfo, error) {
+	decoded := strings.TrimSpace(content)
+	if !strings.Contains(decoded, "://") && !strings.HasPrefix(decoded, "{") {
+		if data, ok := decodeBase64(decoded); ok {
 			decoded = string(data)
 		}
 	}
-	
-	lines := strings.Split(decoded, "\n")
+
 	var outbounds []OutboundInfo
-	var metadata *SubscriptionMetadata
-	
-	for _, line := range lines {
+	for _, line := range strings.Split(decoded, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
-		// Try parsing as URI
-		if strings.Contains(line, "://") {
-			ob, err := m.parseURI(line)
-			if err == nil {
+
+		switch {
+		case strings.Contains(line, "://"):
+			if ob, err := parseURI(line); err == nil {
 				outbounds = append(outbounds, ob)
 			}
-			continue
-		}
-		
-		// Try parsing as JSON
-		if strings.HasPrefix(line, "{") {
-			ob, err := m.parseJSON(line)
-			if err == nil {
+		case strings.HasPrefix(line, "{"):
+			if ob, err := parseJSON(line); err == nil {
 				outbounds = append(outbounds, ob)
 			}
-			continue
-		}
-		
-		// Try parsing as Clash/YAML
-		if strings.Contains(line, "proxies:") || strings.Contains(line, "proxy-groups:") {
-			// Would need YAML parser
-			continue
 		}
 	}
-	
-	return outbounds, metadata, nil
+
+	if len(outbounds) == 0 {
+		return nil, fmt.Errorf("no supported proxies found")
+	}
+	return outbounds, nil
 }
 
-// parseURI parses a proxy URI (vmess://, vless://, trojan://, etc.)
-func (m *Manager) parseURI(uri string) (OutboundInfo, error) {
-	var ob OutboundInfo
-	ob.Extra = make(map[string]string)
-	
+// decodeBase64 accepts standard and URL-safe alphabets, with or without
+// padding and line breaks.
+func decodeBase64(s string) ([]byte, bool) {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, s)
+	if s == "" {
+		return nil, false
+	}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if data, err := enc.DecodeString(s); err == nil {
+			return data, true
+		}
+	}
+	return nil, false
+}
+
+// parseURI parses a proxy URI (vmess://, vless://, trojan://, ss://, hysteria2://)
+func parseURI(uri string) (OutboundInfo, error) {
+	if strings.HasPrefix(uri, "vmess://") {
+		return parseVMess(strings.TrimPrefix(uri, "vmess://"))
+	}
+
+	ob := OutboundInfo{Extra: make(map[string]string)}
 	parsed, err := url.Parse(uri)
 	if err != nil {
 		return ob, err
 	}
-	
+
 	ob.Type = parsed.Scheme
 	ob.Server = parsed.Hostname()
-	
-	if port := parsed.Port(); port != "" {
-		fmt.Sscanf(port, "%d", &ob.Port)
-	}
-	
-	// Parse user info
+	ob.Port, _ = strconv.Atoi(parsed.Port())
+	// The node name is the URI fragment; url.Parse already unescapes it.
+	ob.Name = parsed.Fragment
+
 	if parsed.User != nil {
 		ob.UUID = parsed.User.Username()
 		if pwd, ok := parsed.User.Password(); ok {
 			ob.Password = pwd
 		}
 	}
-	
-	// Parse query parameters
+
 	query := parsed.Query()
 	ob.Security = query.Get("security")
 	ob.Flow = query.Get("flow")
@@ -462,109 +481,207 @@ func (m *Manager) parseURI(uri string) (OutboundInfo, error) {
 	ob.Fingerprint = query.Get("fp")
 	ob.PublicKey = query.Get("pbk")
 	ob.ShortID = query.Get("sid")
-	ob.Method = query.Get("method")
-	ob.Name = query.Get("name")
-	
-	// Decode name if base64
-	if ob.Name != "" {
-		if decoded, err := base64.URLEncoding.DecodeString(ob.Name); err == nil {
-			ob.Name = string(decoded)
-		}
-	}
-	
-	// Set defaults based on type
+	ob.Path = query.Get("path")
+	ob.Host = query.Get("host")
+
 	switch ob.Type {
-	case "vmess":
-		if ob.Security == "" { ob.Security = "auto" }
-		if ob.Transport == "" { ob.Transport = "tcp" }
-	case "vless":
-		if ob.Security == "" { ob.Security = "tls" }
-		if ob.Transport == "" { ob.Transport = "tcp" }
-	case "trojan":
-		if ob.Security == "" { ob.Security = "tls" }
-		if ob.Transport == "" { ob.Transport = "tcp" }
+	case "vless", "trojan":
+		if ob.Type == "trojan" {
+			ob.Password, ob.UUID = ob.UUID, ""
+		}
+		if ob.Security == "" {
+			ob.Security = "tls"
+			if ob.Type == "vless" {
+				ob.Security = "none"
+			}
+		}
+		if ob.Transport == "" {
+			ob.Transport = "tcp"
+		}
 	case "ss", "shadowsocks":
-		if ob.Method == "" { ob.Method = "aes-256-gcm" }
 		ob.Type = "shadowsocks"
+		// SIP002: userinfo is base64(method:password) or percent-encoded method:password.
+		userinfo := ob.UUID
+		if ob.Password == "" {
+			if data, ok := decodeBase64(userinfo); ok {
+				userinfo = string(data)
+			}
+			if method, pwd, ok := strings.Cut(userinfo, ":"); ok {
+				ob.Method, ob.Password = method, pwd
+			}
+		} else {
+			ob.Method = userinfo
+		}
+		ob.UUID = ""
+		if ob.Method == "" {
+			return ob, fmt.Errorf("shadowsocks: missing method")
+		}
 	case "hysteria2", "hy2":
 		ob.Type = "hysteria2"
+		ob.Password, ob.UUID = ob.UUID, ""
+		if ob.Password == "" {
+			ob.Password = query.Get("auth")
+		}
+	default:
+		return ob, fmt.Errorf("unsupported scheme: %s", ob.Type)
 	}
-	
+
+	if ob.Server == "" || ob.Port == 0 {
+		return ob, fmt.Errorf("missing server or port")
+	}
 	return ob, nil
 }
 
-// parseJSON parses a JSON outbound
-func (m *Manager) parseJSON(content string) (OutboundInfo, error) {
-	var ob OutboundInfo
-	ob.Extra = make(map[string]string)
-	
+// parseVMess parses the v2rayN "vmess://base64(json)" format.
+func parseVMess(payload string) (OutboundInfo, error) {
+	ob := OutboundInfo{Type: "vmess", Extra: make(map[string]string)}
+	data, ok := decodeBase64(payload)
+	if !ok {
+		return ob, fmt.Errorf("vmess: invalid base64")
+	}
+	var v map[string]interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return ob, fmt.Errorf("vmess: %w", err)
+	}
+	str := func(k string) string {
+		switch x := v[k].(type) {
+		case string:
+			return x
+		case float64:
+			return strconv.FormatFloat(x, 'f', -1, 64)
+		}
+		return ""
+	}
+	ob.Name = str("ps")
+	ob.Server = str("add")
+	ob.Port, _ = strconv.Atoi(str("port"))
+	ob.UUID = str("id")
+	ob.Transport = str("net")
+	ob.Security = str("tls")
+	ob.SNI = str("sni")
+	ob.Path = str("path")
+	ob.Host = str("host")
+	ob.Method = str("scy")
+	if ob.Method == "" {
+		ob.Method = "auto"
+	}
+	if ob.Transport == "" {
+		ob.Transport = "tcp"
+	}
+	if ob.Server == "" || ob.Port == 0 || ob.UUID == "" {
+		return ob, fmt.Errorf("vmess: missing server, port or id")
+	}
+	return ob, nil
+}
+
+// parseJSON parses a sing-box JSON outbound
+func parseJSON(content string) (OutboundInfo, error) {
+	ob := OutboundInfo{Extra: make(map[string]string)}
+
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(content), &data); err != nil {
 		return ob, err
 	}
-	
+
 	ob.Type = getString(data, "type")
 	ob.Tag = getString(data, "tag")
+	ob.Name = ob.Tag
 	ob.Server = getString(data, "server")
-	
 	if port, ok := data["server_port"].(float64); ok {
 		ob.Port = int(port)
 	}
-	
 	ob.UUID = getString(data, "uuid")
 	ob.Password = getString(data, "password")
 	ob.Method = getString(data, "method")
 	ob.Flow = getString(data, "flow")
-	ob.Transport = getString(data, "transport")
-	ob.Security = getString(data, "security")
-	ob.SNI = getString(data, "server_name")
-	ob.Fingerprint = getString(data, "utls", "fingerprint")
-	ob.PublicKey = getString(data, "reality", "public_key")
-	ob.ShortID = getString(data, "reality", "short_id")
-	
+	ob.Transport = getString(data, "transport", "type")
+	ob.SNI = getString(data, "tls", "server_name")
+	ob.Fingerprint = getString(data, "tls", "utls", "fingerprint")
+	ob.PublicKey = getString(data, "tls", "reality", "public_key")
+	ob.ShortID = getString(data, "tls", "reality", "short_id")
+
+	if ob.Type == "" {
+		return ob, fmt.Errorf("json outbound without type")
+	}
 	return ob, nil
 }
 
 func getString(data map[string]interface{}, keys ...string) string {
 	current := data
-	for i, key := range keys {
+	for i, k := range keys {
 		if i == len(keys)-1 {
-			if v, ok := current[key].(string); ok {
-				return v
-			}
-		} else {
-			if v, ok := current[key].(map[string]interface{}); ok {
-				current = v
-			} else {
-				return ""
-			}
+			v, _ := current[k].(string)
+			return v
 		}
+		next, ok := current[k].(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		current = next
 	}
 	return ""
 }
 
-func isBase64(s string) bool {
-	// Check if string looks like base64
-	matched, _ := regexp.MatchString(`^[A-Za-z0-9+/]*={0,2}$`, s)
-	return matched && len(s)%4 == 0 && len(s) > 20
+type cacheEntry struct {
+	Section    string         `json:"section"`
+	URL        string         `json:"url"`
+	LastUpdate time.Time      `json:"last_update"`
+	Outbounds  []OutboundInfo `json:"outbounds"`
 }
 
-// loadCache loads subscription cache from disk
-func (m *Manager) loadCache() {
-	// Implementation would load from cacheDir
+func (m *Manager) cacheFile() string {
+	return filepath.Join(m.cacheDir, "subscriptions.json")
 }
 
-// saveCache saves subscription cache to disk
-func (m *Manager) saveCache() {
-	// Implementation would save to cacheDir
-}
-
-var wg sync.WaitGroup
-
-func (m *Manager) log(level, format string, args ...interface{}) {
-	if m.onLog != nil {
-		msg := fmt.Sprintf(format, args...)
-		m.onLog(level, "[subscription] "+msg)
+// loadCacheLocked restores previously fetched outbounds so the router keeps
+// working if the subscription server is unreachable at boot.
+func (m *Manager) loadCacheLocked() {
+	data, err := os.ReadFile(m.cacheFile())
+	if err != nil {
+		return
+	}
+	var entries []cacheEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		m.log("warn", "Ignoring broken subscription cache: %v", err)
+		return
+	}
+	for _, e := range entries {
+		m.subscriptions[key(e.Section, e.URL)] = &SubscriptionState{
+			Section:    e.Section,
+			URL:        e.URL,
+			LastUpdate: e.LastUpdate,
+			Outbounds:  e.Outbounds,
+		}
 	}
 }
 
+// saveCache writes fetched outbounds to disk.
+func (m *Manager) saveCache() {
+	m.mu.RLock()
+	entries := make([]cacheEntry, 0, len(m.subscriptions))
+	for _, s := range m.subscriptions {
+		if !s.LastUpdate.IsZero() {
+			entries = append(entries, cacheEntry{s.Section, s.URL, s.LastUpdate, s.Outbounds})
+		}
+	}
+	m.mu.RUnlock()
+
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(m.cacheDir, 0700); err != nil {
+		m.log("warn", "Cannot create subscription cache dir: %v", err)
+		return
+	}
+	tmp := m.cacheFile() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err == nil {
+		os.Rename(tmp, m.cacheFile())
+	}
+}
+
+func (m *Manager) log(level, format string, args ...interface{}) {
+	if m.onLog != nil {
+		m.onLog(level, "[subscription] "+fmt.Sprintf(format, args...))
+	}
+}

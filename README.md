@@ -62,44 +62,27 @@
 
 ## Установка / Installation
 
-### OpenWRT
+Текущая версия / Current version: **1.0.3**. Подробности — в [INSTALL.md](INSTALL.md).
+
+### OpenWRT, KeeneticOS (Entware), Linux
+
+Скрипт определяет платформу и архитектуру, скачивает бинарник из GitHub Releases, ставит сервис и сохраняет существующий конфиг.
+The script detects the platform and architecture, downloads the binary from GitHub Releases, installs the service and keeps an existing config.
 
 ```bash
-# Установка через opkg / Install via opkg
-opkg update
-opkg install hydravpn-router
-
-# Или установить IPK вручную / Or install IPK manually
-opkg install hydravpn-router_1.0.0_all.ipk
-
-# Включить и запустить / Enable and start
-/etc/init.d/hydravpn-router enable
-/etc/init.d/hydravpn-router start
+curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 ```
 
-### KeeneticOS
+Обновление / Update:
 
 ```bash
-# Через Entware / Via Entware
-opkg update
-opkg install hydravpn-router
-
-# Или установить KNP пакет через веб-интерфейс / Or install KNP package via web interface
-# System → Components → Add component → hydravpn-router.knp
+curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/update.sh | sh
 ```
 
 ### MikroTik RouterOS
 
-```bash
-# Через NPK пакет / Via NPK package
-# Скопируйте hydravpn-router.npk в Files роутера / Copy hydravpn-router.npk to router Files
-# System → Packages → Install
-
-# Или через Docker контейнер / Or via Docker container
-/container add name=hydravpn-router image=hydravpn-router:latest \
-    interface=veth1 mounts=hydravpn-router-config:/etc/hydravpn-router \
-    dns=77.88.8.8,77.88.8.1 logging=yes
-```
+RouterOS 7 с пакетом `container`: образ собирается из [Dockerfile](Dockerfile) (`make docker-build`). См. [INSTALL.md](INSTALL.md).
+RouterOS 7 with the `container` package: build the image from the [Dockerfile](Dockerfile) (`make docker-build`). See [INSTALL.md](INSTALL.md).
 
 ## Конфигурация / Configuration
 
@@ -219,7 +202,7 @@ community_lists:
 ## Использование CLI / CLI Usage
 
 ```bash
-# Запуск сервиса / Start service
+# Запуск сервиса (в foreground, под procd/systemd/rc) / Start service (foreground, under procd/systemd/rc)
 hydravpn-router start -c /etc/hydravpn-router/config.yaml
 
 # Остановка сервиса / Stop service
@@ -245,7 +228,16 @@ hydravpn-router check singbox
 hydravpn-router check inbounds
 hydravpn-router check fakeip
 hydravpn-router check nft
+
+# Состояние компонентов / Component status
+hydravpn-router providers
+hydravpn-router dns
+hydravpn-router firewall
+hydravpn-router subs
 ```
+
+`stop`, `reload` и команды статуса находят работающий сервис по PID-файлу в `--runtime-dir` (по умолчанию `/var/run/hydravpn-router`; на Keenetic Entware пути `/opt/...` определяются автоматически). `reload` отправляет SIGHUP: сервис перечитывает конфиг без перезапуска.
+`stop`, `reload` and the status commands find the running service through the PID file in `--runtime-dir` (default `/var/run/hydravpn-router`; Keenetic Entware `/opt/...` paths are detected automatically). `reload` sends SIGHUP: the service re-reads its config without a restart.
 
 ## Веб-интерфейс / Web UI
 
@@ -264,46 +256,34 @@ Access via `http://router.ip:8080` (container) or WinBox/WebFig
 ## Сборка из исходников / Building from Source
 
 ### Требования / Prerequisites
-- Go 1.23+
-- Docker (для кросс-платформенных сборок / for cross-platform builds)
-- OpenWRT SDK (для IPK/APK / for IPK/APK)
-- KeeneticOS SDK (для KNP / for KNP)
-- Сборочное окружение MikroTik RouterOS (для NPK / for NPK)
+- Go 1.25+
+- Docker с BuildKit (для IPK и образа / for IPK and the image)
 
 ### Команды сборки / Build Commands
 
+Версия берётся из `pkg/version/version.go` / The version is read from `pkg/version/version.go`.
+
 ```bash
-# Сборка всех платформ / Build all platforms
-./scripts/build.sh 1.0.0 ./dist
+# Бинарники для релиза (имена совпадают с install.sh) / Release binaries (names match install.sh)
+make build-all            # = ./scripts/build.sh
 
-# Сборка конкретной платформы / Build specific platform
-GOOS=linux GOARCH=amd64 go build -o hydravpn-router ./cmd/hydravpn-router
+# Текущая платформа / Current platform
+make build
 
-# Сборка OpenWRT пакетов / Build OpenWRT packages
-docker build -f build/openwrt/Dockerfile -t hydravpn-router-openwrt .
-docker run --rm -v $(pwd)/dist:/output hydravpn-router-openwrt
+# OpenWRT .ipk для основных архитектур / OpenWRT .ipk for common architectures
+make build-openwrt
 
-# Сборка KeeneticOS пакета / Build KeeneticOS package
-cd internal/platform/keenetic && go run . generate-knp 1.0.0 ./dist
-
-# Сборка MikroTik пакета / Build MikroTik package
-cd internal/platform/mikrotik && go run . generate-npk 1.0.0 ./dist
+# Docker-образ (Docker, MikroTik container) / Docker image
+make docker-build
 ```
 
 ## API
 
-### Clash API (порт 9090 / Port 9090)
-- `GET /configs` — получить конфигурацию / get configuration
-- `GET /proxies` — список прокси и групп / list proxies and groups
-- `PUT /proxies/{name}` — выбрать прокси в группе / select proxy in group
-- `GET /rules` — список правил маршрутизации / list routing rules
-- `GET /connections` — активные соединения / active connections
-- `GET /traffics` — статистика трафика / traffic statistics
-- `GET /memory` — использование памяти / memory usage
-- `GET /version` — информация о версии / version info
-- `GET /logs` — WebSocket поток логов / WebSocket log stream
+### Clash API (sing-box, порт 9090 / port 9090)
+При `enable_yacd: true` sing-box открывает свой Clash API на `127.0.0.1:9090`.
+With `enable_yacd: true` sing-box serves its own Clash API on `127.0.0.1:9090`.
 
-### RPC API (LuCI)
+### RPC API (LuCI) — планируется, пока не реализовано / planned, not implemented yet
 - `get_status` — статус сервиса / service status
 - `get_config` — текущая конфигурация / current configuration
 - `set_config` — обновить конфигурацию / update configuration

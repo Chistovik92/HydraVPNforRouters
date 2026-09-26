@@ -1,14 +1,16 @@
 //go:build !windows
-// +build !windows
 
 package firewall
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os/exec"
-	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,171 +18,149 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 )
 
-// Ensure wg is initialized in NewManager
-func init() {
-	// This ensures the package initializes correctly
-}
-
-// Manager manages firewall rules for traffic routing
+// Manager redirects LAN traffic to the sing-box tproxy inbound and, when
+// enabled, queues packets to nfqws (zapret).
+//
+// nftables rules are generated as one script and applied atomically with
+// "nft -f -", so a reload replaces the whole table instead of appending
+// duplicate rules.
 type Manager struct {
-	mu          sync.RWMutex
-	config      *config.Config
-	ctx         context.Context
-	cancel      context.CancelFunc
-	started     bool
-	onLog       func(level, message string)
-	wg          sync.WaitGroup
-	
-	backend     FirewallBackend
-	tableName   string
-	chainName   string
-	markValue   string
-	
-	// Rule tracking
-	appliedRules  map[string]bool
-	interfaces    []string
-	sourceIPs     []string
-	
+	mu      sync.RWMutex
+	config  *config.Config
+	started bool
+	onLog   func(level, message string)
+
+	backend   FirewallBackend
+	tableName string
+	chainName string
+	markValue string
+
+	interfaces []string
+	sourceIPs  []string
+	nfqueue    *NFQueueOptions
+
 	// Stats
-	rulesApplied  int
-	rulesFailed   int
-	lastApply     time.Time
+	rulesApplied int
+	rulesFailed  int
+	lastApply    time.Time
+	lastError    string
 }
 
 // NewManager creates a new firewall manager
 func NewManager(opts Options) *Manager {
-	ctx, cancel := context.WithCancel(context.Background())
-	
 	m := &Manager{
-		config:       opts.Config,
-		ctx:          ctx,
-		cancel:       cancel,
-		onLog:        opts.OnLog,
-		tableName:    "podkop",
-		chainName:    "podkop-chain",
-		markValue:    "0x08000000",
-		appliedRules: make(map[string]bool),
-		interfaces:   opts.Config.Settings.SourceNetworkInterfaces,
-		wg:           sync.WaitGroup{},
+		config:     opts.Config,
+		onLog:      opts.OnLog,
+		tableName:  TableName,
+		chainName:  ChainName,
+		markValue:  MarkValue,
+		interfaces: opts.Config.Settings.SourceNetworkInterfaces,
 	}
-	
-	// Detect backend
-	m.backend = m.detectBackend()
-	
+	m.backend = detectBackend()
 	return m
 }
 
 // detectBackend detects the available firewall backend
-func (m *Manager) detectBackend() FirewallBackend {
-	// Check for nftables
+func detectBackend() FirewallBackend {
 	if _, err := exec.LookPath("nft"); err == nil {
 		return FirewallBackendNFTables
 	}
-	
-	// Check for iptables
 	if _, err := exec.LookPath("iptables"); err == nil {
 		return FirewallBackendIPTables
 	}
-	
-	// Check for RouterOS (MikroTik)
-	if runtime.GOOS == "linux" && fileExists("/etc/routeros") {
-		return FirewallBackendRouterOS
-	}
-	
-	return FirewallBackendNFTables // Default
+	return FirewallBackendNFTables
 }
 
-func fileExists(path string) bool {
-	_, err := exec.LookPath(path)
-	return err == nil
-}
-
-// Start starts the firewall manager
+// Start applies the rules
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.started {
 		return nil
 	}
-	
+
 	m.log("info", "Starting firewall manager with backend: %s", m.backend)
-	
-	// Create table and chains
-	if err := m.createTableAndChains(); err != nil {
-		return fmt.Errorf("create table/chains: %w", err)
+	if err := m.applyLocked(); err != nil {
+		m.cleanupLocked()
+		return err
 	}
-	
-	// Apply initial rules
-	if err := m.applyRules(); err != nil {
-		return fmt.Errorf("apply rules: %w", err)
-	}
-	
+
 	m.started = true
 	m.log("info", "Firewall manager started")
 	return nil
 }
 
-// Stop stops the firewall manager
+// Stop removes all rules
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if !m.started {
 		return nil
 	}
-	
+
 	m.log("info", "Stopping firewall manager")
-	
-	// Remove rules
-	m.removeRules()
-	
-	// Clean up table/chains
-	m.cleanupTableAndChains()
-	
+	m.cleanupLocked()
 	m.started = false
-	m.cancel()
-	m.wg.Wait()
 	m.log("info", "Firewall manager stopped")
 	return nil
 }
 
-// Reload reloads firewall configuration
+// Reload re-applies rules for the new configuration
 func (m *Manager) Reload(cfg *config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.config = cfg
 	m.interfaces = cfg.Settings.SourceNetworkInterfaces
-	
-	// Re-apply rules
-	m.removeRules()
-	if err := m.applyRules(); err != nil {
-		return fmt.Errorf("apply rules: %w", err)
+	if !m.started {
+		return nil
 	}
-	
+	if err := m.applyLocked(); err != nil {
+		return err
+	}
 	m.log("info", "Firewall rules reloaded")
 	return nil
+}
+
+// SetNFQueue enables (opts != nil) or disables queueing to nfqws.
+func (m *Manager) SetNFQueue(opts *NFQueueOptions) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.nfqueue = opts
+	if !m.started {
+		return nil
+	}
+	return m.applyLocked()
 }
 
 // GetStatus returns firewall manager status
 func (m *Manager) GetStatus() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	return map[string]interface{}{
-		"running":        m.started,
-		"backend":        m.backend,
-		"table_name":     m.tableName,
-		"chain_name":     m.chainName,
-		"mark_value":     m.markValue,
-		"interfaces":     m.interfaces,
-		"source_ips":     m.sourceIPs,
-		"rules_applied":  m.rulesApplied,
-		"rules_failed":   m.rulesFailed,
-		"last_apply":     m.lastApply.Format(time.RFC3339),
-		"active_rules":   len(m.appliedRules),
+
+	status := map[string]interface{}{
+		"running":       m.started,
+		"backend":       m.backend,
+		"table_name":    m.tableName,
+		"chain_name":    m.chainName,
+		"mark_value":    m.markValue,
+		"route_table":   RouteTable,
+		"tproxy_port":   config.TProxyPort,
+		"interfaces":    m.interfaces,
+		"source_ips":    m.sourceIPs,
+		"nfqueue":       m.nfqueue != nil,
+		"rules_applied": m.rulesApplied,
+		"rules_failed":  m.rulesFailed,
+		"last_error":    m.lastError,
+		"last_apply":    "",
 	}
+	if !m.lastApply.IsZero() {
+		status["last_apply"] = m.lastApply.Format(time.RFC3339)
+	}
+	return status
 }
 
 // GetStatusJSON returns status as JSON
@@ -189,299 +169,297 @@ func (m *Manager) GetStatusJSON() string {
 	return string(data)
 }
 
-// createTableAndChains creates the firewall table and chains
-func (m *Manager) createTableAndChains() error {
+// applyLocked (re)creates all firewall rules and the policy routing entry.
+func (m *Manager) applyLocked() error {
+	var err error
 	switch m.backend {
 	case FirewallBackendNFTables:
-		return m.createNFTablesStructures()
+		err = runWithStdin("nft", m.nftScript(), "-f", "-")
 	case FirewallBackendIPTables:
-		return m.createIPTablesStructures()
-	case FirewallBackendRouterOS:
-		return m.createRouterOSStructures()
+		err = m.applyIPTables()
+	default:
+		err = fmt.Errorf("unsupported backend: %s", m.backend)
 	}
-	return fmt.Errorf("unsupported backend: %s", m.backend)
+	if err == nil {
+		err = m.applyPolicyRouting()
+	}
+
+	m.lastApply = time.Now()
+	if err != nil {
+		m.rulesFailed++
+		m.lastError = err.Error()
+		return fmt.Errorf("apply firewall rules: %w", err)
+	}
+	m.rulesApplied++
+	m.lastError = ""
+	return nil
 }
 
-// createNFTablesStructures creates nftables table and chains
-func (m *Manager) createNFTablesStructures() error {
-	cmds := [][]string{
-		{"nft", "add", "table", "inet", m.tableName},
-		{"nft", "add", "chain", "inet", m.tableName, m.chainName, "{ type filter hook prerouting priority -150; }"},
-		{"nft", "add", "set", "inet", m.tableName, "local_v4", "{ type ipv4_addr; flags interval; }"},
-		{"nft", "add", "set", "inet", m.tableName, "local_v6", "{ type ipv6_addr; flags interval; }"},
-		{"nft", "add", "set", "inet", m.tableName, "forkop_subnets", "{ type ipv4_addr; flags interval; }"},
-		{"nft", "add", "set", "inet", m.tableName, "forkop_subnets6", "{ type ipv6_addr; flags interval; }"},
-		{"nft", "add", "set", "inet", m.tableName, "forkop_ports", "{ type inet_service; flags interval; }"},
-		{"nft", "add", "set", "inet", m.tableName, "forkop_interfaces", "{ type ifname; }"},
+// nftScript renders the complete table definition. The leading
+// "add table"+"delete table" pair makes the script idempotent.
+func (m *Manager) nftScript() string {
+	var b strings.Builder
+	mark := m.markValue
+	tproxy := fmt.Sprintf("meta mark set %s tproxy ip to 127.0.0.1:%d accept", mark, config.TProxyPort)
+
+	fmt.Fprintf(&b, "add table inet %s\n", m.tableName)
+	fmt.Fprintf(&b, "delete table inet %s\n", m.tableName)
+	fmt.Fprintf(&b, "table inet %s {\n", m.tableName)
+
+	writeSet(&b, "local_v4", "ipv4_addr", localSubnets())
+	writeSet(&b, "source_v4", "ipv4_addr", m.sourceIPs)
+
+	fmt.Fprintf(&b, "\tchain %s {\n", m.chainName)
+	b.WriteString("\t\ttype filter hook prerouting priority mangle; policy accept;\n")
+	b.WriteString("\t\tmeta nfproto != ipv4 return\n")
+	b.WriteString("\t\tip daddr @local_v4 return\n")
+	if ifaces := quoteAll(m.interfaces); len(ifaces) > 0 {
+		fmt.Fprintf(&b, "\t\tiifname { %s } meta l4proto { tcp, udp } %s\n", strings.Join(ifaces, ", "), tproxy)
 	}
-	
-	for _, cmd := range cmds {
-		if out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput(); err != nil {
-			// Ignore "File exists" errors
-			if !strings.Contains(string(out), "File exists") && !strings.Contains(string(out), "already exists") {
-				m.log("warn", "nft command failed: %s - %s", cmd, string(out))
+	fmt.Fprintf(&b, "\t\tip saddr @source_v4 meta l4proto { tcp, udp } %s\n", tproxy)
+	b.WriteString("\t}\n")
+
+	if q := m.nfqueue; q != nil {
+		ports := joinPorts(q.TCPPorts)
+		b.WriteString("\tchain zapret_post {\n")
+		b.WriteString("\t\ttype filter hook postrouting priority mangle; policy accept;\n")
+		fmt.Fprintf(&b, "\t\tmeta mark & %s != 0 return\n", q.DesyncMark)
+		if ports != "" {
+			fmt.Fprintf(&b, "\t\ttcp dport { %s } ct original packets 1-9 queue num %d bypass\n", ports, q.QueueNum)
+		}
+		if udp := joinPorts(q.UDPPorts); udp != "" {
+			fmt.Fprintf(&b, "\t\tudp dport { %s } ct original packets 1-9 queue num %d bypass\n", udp, q.QueueNum)
+		}
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func writeSet(b *strings.Builder, name, typ string, elems []string) {
+	fmt.Fprintf(b, "\tset %s {\n\t\ttype %s\n\t\tflags interval\n\t\tauto-merge\n", name, typ)
+	if len(elems) > 0 {
+		fmt.Fprintf(b, "\t\telements = { %s }\n", strings.Join(elems, ", "))
+	}
+	b.WriteString("\t}\n")
+}
+
+func quoteAll(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if it = strings.TrimSpace(it); it != "" {
+			out = append(out, strconv.Quote(it))
+		}
+	}
+	return out
+}
+
+func joinPorts(ports []int) string {
+	s := make([]string, len(ports))
+	for i, p := range ports {
+		s[i] = strconv.Itoa(p)
+	}
+	return strings.Join(s, ", ")
+}
+
+// localSubnets returns reserved IPv4 ranges plus the networks of local
+// interfaces; traffic to them is never redirected.
+func localSubnets() []string {
+	nets := map[string]bool{
+		"0.0.0.0/8":      true,
+		"10.0.0.0/8":     true,
+		"100.64.0.0/10":  true,
+		"127.0.0.0/8":    true,
+		"169.254.0.0/16": true,
+		"172.16.0.0/12":  true,
+		"192.168.0.0/16": true,
+		"224.0.0.0/4":    true,
+		"240.0.0.0/4":    true,
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.To4() == nil {
+				continue
+			}
+			masked := &net.IPNet{IP: ipnet.IP.Mask(ipnet.Mask).To4(), Mask: ipnet.Mask}
+			nets[masked.String()] = true
+		}
+	}
+	out := make([]string, 0, len(nets))
+	for n := range nets {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// applyIPTables creates an equivalent ruleset for iptables (IPv4 only).
+func (m *Manager) applyIPTables() error {
+	m.cleanupIPTables()
+
+	mark := m.markValue + "/" + m.markValue
+	port := strconv.Itoa(config.TProxyPort)
+	rules := [][]string{
+		{"-t", "mangle", "-N", m.chainName},
+	}
+	for _, n := range localSubnets() {
+		rules = append(rules, []string{"-t", "mangle", "-A", m.chainName, "-d", n, "-j", "RETURN"})
+	}
+	for _, iface := range m.interfaces {
+		for _, proto := range []string{"tcp", "udp"} {
+			rules = append(rules, []string{"-t", "mangle", "-A", m.chainName, "-i", iface, "-p", proto,
+				"-j", "TPROXY", "--on-ip", "127.0.0.1", "--on-port", port, "--tproxy-mark", mark})
+		}
+	}
+	for _, src := range m.sourceIPs {
+		for _, proto := range []string{"tcp", "udp"} {
+			rules = append(rules, []string{"-t", "mangle", "-A", m.chainName, "-s", src, "-p", proto,
+				"-j", "TPROXY", "--on-ip", "127.0.0.1", "--on-port", port, "--tproxy-mark", mark})
+		}
+	}
+	rules = append(rules, []string{"-t", "mangle", "-I", "PREROUTING", "-j", m.chainName})
+
+	if q := m.nfqueue; q != nil {
+		post := m.chainName + "-post"
+		rules = append(rules, []string{"-t", "mangle", "-N", post})
+		base := []string{"-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", "1:9",
+			"-m", "mark", "!", "--mark", q.DesyncMark + "/" + q.DesyncMark,
+			"-j", "NFQUEUE", "--queue-num", strconv.Itoa(q.QueueNum), "--queue-bypass"}
+		if len(q.TCPPorts) > 0 {
+			r := []string{"-t", "mangle", "-A", post, "-p", "tcp", "-m", "multiport", "--dports", strings.ReplaceAll(joinPorts(q.TCPPorts), " ", "")}
+			rules = append(rules, append(r, base...))
+		}
+		if len(q.UDPPorts) > 0 {
+			r := []string{"-t", "mangle", "-A", post, "-p", "udp", "-m", "multiport", "--dports", strings.ReplaceAll(joinPorts(q.UDPPorts), " ", "")}
+			rules = append(rules, append(r, base...))
+		}
+		rules = append(rules, []string{"-t", "mangle", "-I", "POSTROUTING", "-j", post})
+	}
+
+	for _, r := range rules {
+		if out, err := exec.Command("iptables", r...).CombinedOutput(); err != nil {
+			return fmt.Errorf("iptables %s: %v: %s", strings.Join(r, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+func (m *Manager) cleanupIPTables() {
+	post := m.chainName + "-post"
+	for _, args := range [][]string{
+		{"-t", "mangle", "-D", "PREROUTING", "-j", m.chainName},
+		{"-t", "mangle", "-F", m.chainName},
+		{"-t", "mangle", "-X", m.chainName},
+		{"-t", "mangle", "-D", "POSTROUTING", "-j", post},
+		{"-t", "mangle", "-F", post},
+		{"-t", "mangle", "-X", post},
+	} {
+		// Repeat deletes of jump rules in case older versions added duplicates.
+		for i := 0; i < 10; i++ {
+			if exec.Command("iptables", args...).Run() != nil || args[2] != "-D" {
+				break
 			}
 		}
 	}
-	
-	// Populate local subnets
-	m.populateLocalSubnets()
-	
+}
+
+// applyPolicyRouting delivers marked packets to the local tproxy socket:
+// ip rule fwmark MARK/MARK lookup RouteTable; local default route via lo.
+func (m *Manager) applyPolicyRouting() error {
+	m.cleanupPolicyRouting()
+	table := strconv.Itoa(RouteTable)
+	mark := m.markValue + "/" + m.markValue
+	if out, err := exec.Command("ip", "rule", "add", "fwmark", mark, "lookup", table, "priority", table).CombinedOutput(); err != nil {
+		return fmt.Errorf("ip rule add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("ip", "route", "replace", "local", "0.0.0.0/0", "dev", "lo", "table", table).CombinedOutput(); err != nil {
+		return fmt.Errorf("ip route replace: %v: %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
-// createIPTablesStructures creates iptables chains
-func (m *Manager) createIPTablesStructures() error {
-	cmds := [][]string{
-		{"iptables", "-t", "mangle", "-N", m.chainName},
-		{"iptables", "-t", "mangle", "-A", "PREROUTING", "-j", m.chainName},
-		{"ip6tables", "-t", "mangle", "-N", m.chainName},
-		{"ip6tables", "-t", "mangle", "-A", "PREROUTING", "-j", m.chainName},
-	}
-	
-	for _, cmd := range cmds {
-		if out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput(); err != nil {
-			if !strings.Contains(string(out), "Chain already exists") {
-				m.log("warn", "iptables command failed: %s - %s", cmd, string(out))
-			}
+func (m *Manager) cleanupPolicyRouting() {
+	table := strconv.Itoa(RouteTable)
+	mark := m.markValue + "/" + m.markValue
+	for i := 0; i < 10; i++ {
+		if exec.Command("ip", "rule", "del", "fwmark", mark, "lookup", table).Run() != nil {
+			break
 		}
 	}
-	
-	return nil
+	exec.Command("ip", "route", "flush", "table", table).Run()
 }
 
-// createRouterOSStructures creates RouterOS firewall structures
-func (m *Manager) createRouterOSStructures() error {
-	// RouterOS uses /ip firewall mangle and routing marks
-	// This would use the RouterOS API
-	m.log("info", "RouterOS firewall backend - using API")
-	return nil
-}
-
-// cleanupTableAndChains removes the firewall table and chains
-func (m *Manager) cleanupTableAndChains() {
+func (m *Manager) cleanupLocked() {
 	switch m.backend {
 	case FirewallBackendNFTables:
 		exec.Command("nft", "delete", "table", "inet", m.tableName).Run()
 	case FirewallBackendIPTables:
-		exec.Command("iptables", "-t", "mangle", "-F", m.chainName).Run()
-		exec.Command("iptables", "-t", "mangle", "-X", m.chainName).Run()
-		exec.Command("ip6tables", "-t", "mangle", "-F", m.chainName).Run()
-		exec.Command("ip6tables", "-t", "mangle", "-X", m.chainName).Run()
-	case FirewallBackendRouterOS:
-		// Cleanup via RouterOS API
+		m.cleanupIPTables()
 	}
+	m.cleanupPolicyRouting()
 }
 
-// applyRules applies routing rules
-func (m *Manager) applyRules() error {
-	// Mark traffic from source interfaces
-	for _, iface := range m.interfaces {
-		if err := m.markInterfaceTraffic(iface); err != nil {
-			m.rulesFailed++
-			m.log("error", "Failed to mark traffic for interface %s: %v", iface, err)
-		} else {
-			m.rulesApplied++
-		}
-	}
-	
-	// Apply routing rules for marked traffic
-	if err := m.applyRoutingRules(); err != nil {
-		m.rulesFailed++
-		m.log("error", "Failed to apply routing rules: %v", err)
-	}
-	
-	// Apply DNS rules
-	if err := m.applyDNSRules(); err != nil {
-		m.rulesFailed++
-		m.log("error", "Failed to apply DNS rules: %v", err)
-	}
-	
-	m.lastApply = time.Now()
-	return nil
-}
-
-// removeRules removes all applied rules
-func (m *Manager) removeRules() {
-	// Remove interface marking rules
-	for _, iface := range m.interfaces {
-		m.unmarkInterfaceTraffic(iface)
-	}
-	
-	// Flush chains
-	switch m.backend {
-	case FirewallBackendNFTables:
-		exec.Command("nft", "flush", "chain", "inet", m.tableName, m.chainName).Run()
-	case FirewallBackendIPTables:
-		exec.Command("iptables", "-t", "mangle", "-F", m.chainName).Run()
-		exec.Command("ip6tables", "-t", "mangle", "-F", m.chainName).Run()
-	}
-	
-	m.appliedRules = make(map[string]bool)
-}
-
-// markInterfaceTraffic marks traffic from an interface
-func (m *Manager) markInterfaceTraffic(iface string) error {
-	ruleKey := "mark-" + iface
-	if m.appliedRules[ruleKey] {
-		return nil
-	}
-	
-	switch m.backend {
-	case FirewallBackendNFTables:
-		cmd := exec.Command("nft", "add", "rule", "inet", m.tableName, m.chainName,
-			"iifname", iface, "meta", "mark", "set", m.markValue)
-		return cmd.Run()
-	case FirewallBackendIPTables:
-		cmd := exec.Command("iptables", "-t", "mangle", "-A", m.chainName,
-			"-i", iface, "-j", "MARK", "--set-mark", m.markValue)
-		return cmd.Run()
-	}
-	return nil
-}
-
-// unmarkInterfaceTraffic removes interface marking
-func (m *Manager) unmarkInterfaceTraffic(iface string) {
-	ruleKey := "mark-" + iface
-	delete(m.appliedRules, ruleKey)
-	
-	switch m.backend {
-	case FirewallBackendNFTables:
-		// Would need to track rule handles for precise deletion
-		exec.Command("nft", "delete", "rule", "inet", m.tableName, m.chainName,
-			"iifname", iface, "meta", "mark", "set", m.markValue).Run()
-	case FirewallBackendIPTables:
-		exec.Command("iptables", "-t", "mangle", "-D", m.chainName,
-			"-i", iface, "-j", "MARK", "--set-mark", m.markValue).Run()
-	}
-}
-
-// applyRoutingRules applies policy routing for marked traffic
-func (m *Manager) applyRoutingRules() error {
-	// Create routing table
-	tableName := "podkop"
-	
-	// Add routing table entry
-	exec.Command("ip", "route", "add", "default", "dev", "tun0", "table", tableName).Run()
-	exec.Command("ip", "rule", "add", "fwmark", m.markValue, "lookup", tableName, "priority", "100").Run()
-	
-	// IPv6
-	exec.Command("ip", "-6", "route", "add", "default", "dev", "tun0", "table", tableName).Run()
-	exec.Command("ip", "-6", "rule", "add", "fwmark", m.markValue, "lookup", tableName, "priority", "100").Run()
-	
-	return nil
-}
-
-// applyDNSRules applies DNS interception rules
-func (m *Manager) applyDNSRules() error {
-	dnsPort := "53"
-	
-	switch m.backend {
-	case FirewallBackendNFTables:
-		// Redirect DNS to local resolver
-		cmds := [][]string{
-			{"nft", "add", "rule", "inet", m.tableName, m.chainName,
-				"ip", "protocol", "udp", "udp", "dport", dnsPort,
-				"counter", "redirect", "to", ":53"},
-			{"nft", "add", "rule", "inet", m.tableName, m.chainName,
-				"ip6", "nexthdr", "udp", "udp", "dport", dnsPort,
-				"counter", "redirect", "to", ":53"},
-		}
-		for _, cmdArgs := range cmds {
-			exec.Command(cmdArgs[0], cmdArgs[1:]...).Run()
-		}
-	case FirewallBackendIPTables:
-		exec.Command("iptables", "-t", "nat", "-A", "PREROUTING",
-			"-p", "udp", "--dport", dnsPort, "-j", "REDIRECT", "--to-port", "53").Run()
-		exec.Command("ip6tables", "-t", "nat", "-A", "PREROUTING",
-			"-p", "udp", "--dport", dnsPort, "-j", "REDIRECT", "--to-port", "53").Run()
-	}
-	
-	return nil
-}
-
-// populateLocalSubnets populates local subnet sets
-func (m *Manager) populateLocalSubnets() {
-	localNets := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"::1/128",
-		"fe80::/10",
-		"fc00::/7",
-	}
-	
-	for _, netStr := range localNets {
-		if strings.Contains(netStr, ":") {
-			exec.Command("nft", "add", "element", "inet", m.tableName, "local_v6", "{", netStr, "}").Run()
-			exec.Command("nft", "add", "element", "inet", m.tableName, "forkop_subnets6", "{", netStr, "}").Run()
-		} else {
-			exec.Command("nft", "add", "element", "inet", m.tableName, "local_v4", "{", netStr, "}").Run()
-			exec.Command("nft", "add", "element", "inet", m.tableName, "forkop_subnets", "{", netStr, "}").Run()
-		}
-	}
-	
-// Get actual interface subnets
-	links, _ := getLinks()
-	for _, link := range links {
-		// Use the platform-specific AddrList
-		addrs, _ := getAddrList(link)
-		for _, addr := range addrs {
-			exec.Command("nft", "add", "element", "inet", m.tableName, "forkop_subnets", "{", addr.IPNet.String(), "}").Run()
-			if addr.IP.To4() == nil {
-				exec.Command("nft", "add", "element", "inet", m.tableName, "forkop_subnets6", "{", addr.IPNet.String(), "}").Run()
-			}
-		}
-	}
-}
-
-// AddSourceIP adds a source IP to routing
+// AddSourceIP redirects traffic from an additional IPv4 address or subnet.
 func (m *Manager) AddSourceIP(ip string) error {
+	if err := validateIPv4(ip); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
-	m.sourceIPs = append(m.sourceIPs, ip)
-	
-	switch m.backend {
-	case FirewallBackendNFTables:
-		return exec.Command("nft", "add", "element", "inet", m.tableName, "forkop_subnets", "{", ip, "}").Run()
-	case FirewallBackendIPTables:
-		return exec.Command("iptables", "-t", "mangle", "-A", m.chainName,
-			"-s", ip, "-j", "MARK", "--set-mark", m.markValue).Run()
+
+	for _, s := range m.sourceIPs {
+		if s == ip {
+			return nil
+		}
 	}
-	return nil
+	m.sourceIPs = append(m.sourceIPs, ip)
+	if !m.started {
+		return nil
+	}
+	return m.applyLocked()
 }
 
 // RemoveSourceIP removes a source IP from routing
 func (m *Manager) RemoveSourceIP(ip string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	for i, src := range m.sourceIPs {
 		if src == ip {
 			m.sourceIPs = append(m.sourceIPs[:i], m.sourceIPs[i+1:]...)
 			break
 		}
 	}
-	
-	switch m.backend {
-	case FirewallBackendNFTables:
-		return exec.Command("nft", "delete", "element", "inet", m.tableName, "forkop_subnets", "{", ip, "}").Run()
-	case FirewallBackendIPTables:
-		return exec.Command("iptables", "-t", "mangle", "-D", m.chainName,
-			"-s", ip, "-j", "MARK", "--set-mark", m.markValue).Run()
+	if !m.started {
+		return nil
+	}
+	return m.applyLocked()
+}
+
+func validateIPv4(s string) error {
+	if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
+		return nil
+	}
+	if ip, _, err := net.ParseCIDR(s); err == nil && ip.To4() != nil {
+		return nil
+	}
+	return fmt.Errorf("invalid IPv4 address or subnet: %q", s)
+}
+
+func runWithStdin(name, stdin string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(out.String()))
 	}
 	return nil
 }
 
-var wg sync.WaitGroup
-
 func (m *Manager) log(level, format string, args ...interface{}) {
 	if m.onLog != nil {
-		msg := fmt.Sprintf(format, args...)
-		m.onLog(level, "[firewall] "+msg)
+		m.onLog(level, "[firewall] "+fmt.Sprintf(format, args...))
 	}
 }
-

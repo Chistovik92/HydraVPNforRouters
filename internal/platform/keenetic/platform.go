@@ -10,15 +10,16 @@ import (
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
+	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
 
 // Platform implements the KeeneticOS platform integration
 type Platform struct {
-	engine     *core.Engine
-	config     *config.Config
-	entware    bool
-	knap       bool
-	webUIPort  int
+	engine    *core.Engine
+	config    *config.Config
+	entware   bool
+	knap      bool
+	webUIPort int
 }
 
 // NewPlatform creates a new KeeneticOS platform
@@ -35,49 +36,49 @@ func NewPlatform(cfg *config.Config) *Platform {
 func (p *Platform) Initialize(ctx context.Context) error {
 	// Create directory structure
 	dirs := []string{
-		"/opt/etc/podkop-plus",
-		"/opt/etc/podkop-plus/sing-box",
-		"/opt/etc/podkop-plus/zapret",
-		"/opt/etc/podkop-plus/byedpi",
-		"/opt/var/run/podkop-plus",
-		"/opt/var/run/podkop-plus/sing-box",
-		"/opt/var/run/podkop-plus/zapret",
-		"/opt/var/run/podkop-plus/byedpi",
-		"/opt/tmp/podkop-plus",
-		"/opt/share/www/podkop-plus",
+		"/opt/etc/hydravpn-router",
+		"/opt/etc/hydravpn-router/sing-box",
+		"/opt/etc/hydravpn-router/zapret",
+		"/opt/etc/hydravpn-router/byedpi",
+		"/opt/var/run/hydravpn-router",
+		"/opt/var/run/hydravpn-router/sing-box",
+		"/opt/var/run/hydravpn-router/zapret",
+		"/opt/var/run/hydravpn-router/byedpi",
+		"/opt/tmp/hydravpn-router",
+		"/opt/share/www/hydravpn-router",
 	}
-	
+
 	for _, dir := range dirs {
 		os.MkdirAll(dir, 0755)
 	}
-	
+
 	// Write default config if not exists
-	configPath := "/opt/etc/podkop-plus/config.yaml"
+	configPath := "/opt/etc/hydravpn-router/config.yaml"
 	if !fileExists(configPath) {
 		if err := p.config.SaveToFile(configPath); err != nil {
 			return fmt.Errorf("write default config: %w", err)
 		}
 	}
-	
+
 	// Create init script for Entware
 	if p.entware {
 		if err := p.createEntwareInitScript(); err != nil {
 			return fmt.Errorf("create Entware init script: %w", err)
 		}
 	}
-	
+
 	// Create KNP package descriptor
 	if p.knap {
 		if err := p.createKNPDdescriptor(); err != nil {
 			return fmt.Errorf("create KNP descriptor: %w", err)
 		}
 	}
-	
+
 	// Create ndm (Keenetic NDMS) hook scripts
 	if err := p.createNDMHooks(); err != nil {
 		return fmt.Errorf("create NDM hooks: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -95,7 +96,7 @@ func (p *Platform) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	
+
 	p.engine = engine
 	return engine.Start()
 }
@@ -122,13 +123,13 @@ func (p *Platform) createEntwareInitScript() error {
 	initScript := `#!/bin/sh
 
 # Entware init script for HydraVPN for Router
-# Place in /opt/etc/init.d/S99podkop-plus
+# Place in /opt/etc/init.d/S99hydravpn-router
 
-NAME=podkop-plus
-DAEMON=/opt/bin/podkop-plus
-CONFIG=/opt/etc/podkop-plus/config.yaml
-PIDFILE=/opt/var/run/podkop-plus.pid
-LOGFILE=/opt/var/log/podkop-plus.log
+NAME=hydravpn-router
+DAEMON=/opt/bin/hydravpn-router
+CONFIG=/opt/etc/hydravpn-router/config.yaml
+PIDFILE=/opt/var/run/hydravpn-router.pid
+LOGFILE=/opt/var/log/hydravpn-router.log
 
 start() {
     echo "Starting $NAME..."
@@ -136,7 +137,7 @@ start() {
         echo "$NAME already running"
         return 1
     fi
-    
+
     $DAEMON start -c $CONFIG >> $LOGFILE 2>&1 &
     echo $! > $PIDFILE
     echo "$NAME started"
@@ -148,7 +149,7 @@ stop() {
         echo "$NAME not running"
         return 1
     fi
-    
+
     kill $(cat $PIDFILE)
     rm -f $PIDFILE
     echo "$NAME stopped"
@@ -188,14 +189,14 @@ esac
 
 exit 0
 `
-	return os.WriteFile("/opt/etc/init.d/S99podkop-plus", []byte(initScript), 0755)
+	return os.WriteFile("/opt/etc/init.d/S99hydravpn-router", []byte(initScript), 0755)
 }
 
 // createKNPDdescriptor creates the KNP package descriptor
 func (p *Platform) createKNPDdescriptor() error {
 	descriptor := `{
-  "name": "podkop-plus",
-  "version": "1.0.0",
+  "name": "hydravpn-router",
+  "version": "` + version.Version + `",
   "title": "HydraVPN for Router",
   "description": "Multi-platform DPI bypass solution for KeeneticOS",
   "author": "Chistovik92",
@@ -232,11 +233,11 @@ func (p *Platform) createKNPDdescriptor() error {
   "web_ui": {
     "enabled": true,
     "port": 8080,
-    "path": "/podkop-plus",
+    "path": "/hydravpn-router",
     "title": "HydraVPN for Router"
   },
   "config": {
-    "file": "/opt/etc/podkop-plus/config.yaml",
+    "file": "/opt/etc/hydravpn-router/config.yaml",
     "web_editor": true
   },
   "hooks": {
@@ -246,7 +247,7 @@ func (p *Platform) createKNPDdescriptor() error {
   }
 }
 `
-	return os.WriteFile("/opt/etc/podkop-plus/knp.json", []byte(descriptor), 0644)
+	return os.WriteFile("/opt/etc/hydravpn-router/knp.json", []byte(descriptor), 0644)
 }
 
 // createNDMHooks creates NDMS hook scripts
@@ -254,29 +255,29 @@ func (p *Platform) createNDMHooks() error {
 	hooksDir := "/opt/etc/ndm"
 	os.MkdirAll(filepath.Join(hooksDir, "wan.d"), 0755)
 	os.MkdirAll(filepath.Join(hooksDir, "config.d"), 0755)
-	
+
 	// WAN up hook
 	wanUp := `#!/bin/sh
 # NDM WAN up hook for HydraVPN for Router
-# Place in /opt/etc/ndm/wan.d/podkop-plus
+# Place in /opt/etc/ndm/wan.d/hydravpn-router
 
 if [ "$1" = "up" ]; then
-    logger -t podkop-plus "WAN interface $2 up, reloading HydraVPN for Router"
-    /opt/bin/podkop-plus reload -c /opt/etc/podkop-plus/config.yaml
+    logger -t hydravpn-router "WAN interface $2 up, reloading HydraVPN for Router"
+    /opt/bin/hydravpn-router reload -c /opt/etc/hydravpn-router/config.yaml
 fi
 `
-	os.WriteFile(filepath.Join(hooksDir, "wan.d", "podkop-plus"), []byte(wanUp), 0755)
-	
+	os.WriteFile(filepath.Join(hooksDir, "wan.d", "hydravpn-router"), []byte(wanUp), 0755)
+
 	// Config changed hook
 	configChanged := `#!/bin/sh
 # NDM config changed hook for HydraVPN for Router
-# Place in /opt/etc/ndm/config.d/podkop-plus
+# Place in /opt/etc/ndm/config.d/hydravpn-router
 
-logger -t podkop-plus "Configuration changed, reloading HydraVPN for Router"
-/opt/bin/podkop-plus reload -c /opt/etc/podkop-plus/config.yaml
+logger -t hydravpn-router "Configuration changed, reloading HydraVPN for Router"
+/opt/bin/hydravpn-router reload -c /opt/etc/hydravpn-router/config.yaml
 `
-	os.WriteFile(filepath.Join(hooksDir, "config.d", "podkop-plus"), []byte(configChanged), 0755)
-	
+	os.WriteFile(filepath.Join(hooksDir, "config.d", "hydravpn-router"), []byte(configChanged), 0755)
+
 	return nil
 }
 
@@ -284,7 +285,7 @@ logger -t podkop-plus "Configuration changed, reloading HydraVPN for Router"
 func (p *Platform) updateNDMState(state core.EngineState) {
 	// Could use ndmq to update component status
 	stateStr := string(state)
-	exec.Command("ndmq", "-p", "component set podkop-plus state "+stateStr).Run()
+	exec.Command("ndmq", "-p", "component set hydravpn-router state "+stateStr).Run()
 }
 
 // logToNDM logs to NDMS log
@@ -298,87 +299,90 @@ func (p *Platform) logToNDM(level, msg string) {
 	case "debug":
 		priority = "debug"
 	}
-	exec.Command("logger", "-t", "podkop-plus", "-p", "daemon."+priority, msg).Run()
+	exec.Command("logger", "-t", "hydravpn-router", "-p", "daemon."+priority, msg).Run()
 }
 
-// GenerateKNP generates KeeneticOS KNP package
-func (p *Platform) GenerateKNP(version, outputDir string) error {
-	pkgDir := filepath.Join(outputDir, "podkop-plus-"+version)
-	os.MkdirAll(filepath.Join(pkgDir, "scripts"), 0755)
-	os.MkdirAll(filepath.Join(pkgDir, "hooks"), 0755)
-	os.MkdirAll(filepath.Join(pkgDir, "web"), 0755)
-	
-	// Copy files
-	copyDir("/opt/etc/podkop-plus", filepath.Join(pkgDir, "etc/podkop-plus"))
-	copyDir("/opt/etc/init.d", filepath.Join(pkgDir, "etc/init.d"))
-	copyDir("/opt/etc/ndm", filepath.Join(pkgDir, "etc/ndm"))
-	copyDir("/opt/bin", filepath.Join(pkgDir, "opt/bin"))
-	copyDir("/opt/share/www/podkop-plus", filepath.Join(pkgDir, "opt/share/www/podkop-plus"))
-	
+// GenerateKNP generates a KeeneticOS KNP package containing only this
+// program's files (the binary at binaryPath plus generated scripts).
+func (p *Platform) GenerateKNP(pkgVersion, binaryPath, outputDir string) error {
+	pkgDir := filepath.Join(outputDir, "hydravpn-router-"+pkgVersion)
+	for _, dir := range []string{"scripts", "hooks", "web", "opt/bin", "opt/etc/hydravpn-router"} {
+		if err := os.MkdirAll(filepath.Join(pkgDir, dir), 0755); err != nil {
+			return err
+		}
+	}
+
+	if err := copyFile(binaryPath, filepath.Join(pkgDir, "opt/bin/hydravpn-router"), 0755); err != nil {
+		return fmt.Errorf("copy binary: %w", err)
+	}
+	if err := config.DefaultConfig().SaveToFile(filepath.Join(pkgDir, "opt/etc/hydravpn-router/config.yaml")); err != nil {
+		return err
+	}
+
 	// Write scripts
 	scripts := map[string]string{
-		"pre-install.sh":  preInstallScript(),
-		"post-install.sh": postInstallScript(),
-		"pre-uninstall.sh": preUninstallScript(),
+		"pre-install.sh":    preInstallScript(),
+		"post-install.sh":   postInstallScript(),
+		"pre-uninstall.sh":  preUninstallScript(),
 		"post-uninstall.sh": postUninstallScript(),
-		"start.sh":        startScript(),
-		"stop.sh":         stopScript(),
-		"restart.sh":      restartScript(),
+		"start.sh":          startScript(),
+		"stop.sh":           stopScript(),
+		"restart.sh":        restartScript(),
 	}
-	
+
 	for name, content := range scripts {
 		os.WriteFile(filepath.Join(pkgDir, "scripts", name), []byte(content), 0755)
 	}
-	
+
 	// Write hooks
 	hooks := map[string]string{
-		"wan-up.sh":       wanUpHook(),
-		"wan-down.sh":     wanDownHook(),
+		"wan-up.sh":         wanUpHook(),
+		"wan-down.sh":       wanDownHook(),
 		"config-changed.sh": configChangedHook(),
 	}
-	
+
 	for name, content := range hooks {
 		os.WriteFile(filepath.Join(pkgDir, "hooks", name), []byte(content), 0755)
 	}
-	
+
 	// Copy knp.json
-	os.WriteFile(filepath.Join(pkgDir, "knp.json"), []byte(knpDescriptor(version)), 0644)
-	
+	os.WriteFile(filepath.Join(pkgDir, "knp.json"), []byte(knpDescriptor(pkgVersion)), 0644)
+
 	// Create KNP archive
-	cmd := exec.Command("tar", "-czf", filepath.Join(outputDir, "podkop-plus-"+version+".knp"), "-C", pkgDir, ".")
+	cmd := exec.Command("tar", "-czf", filepath.Join(outputDir, "hydravpn-router-"+pkgVersion+".knp"), "-C", pkgDir, ".")
 	return cmd.Run()
 }
 
 // GetSystemInfo returns KeeneticOS system information
 func (p *Platform) GetSystemInfo() map[string]interface{} {
 	info := map[string]interface{}{
-		"platform":   "keenetic",
-		"entware":    p.entware,
-		"knap":       p.knap,
+		"platform":    "keenetic",
+		"entware":     p.entware,
+		"knap":        p.knap,
 		"web_ui_port": p.webUIPort,
 	}
-	
+
 	// Get KeeneticOS version
 	if out, err := exec.Command("ndmq", "-p", "show version").Output(); err == nil {
 		var versionInfo map[string]interface{}
 		json.Unmarshal(out, &versionInfo)
 		info["keenetic_version"] = versionInfo
 	}
-	
+
 	// Get model
 	if out, err := exec.Command("ndmq", "-p", "show hardware").Output(); err == nil {
 		var hwInfo map[string]interface{}
 		json.Unmarshal(out, &hwInfo)
 		info["hardware"] = hwInfo
 	}
-	
+
 	// Get interfaces
 	if out, err := exec.Command("ndmq", "-p", "show interface").Output(); err == nil {
 		var ifaces []map[string]interface{}
 		json.Unmarshal(out, &ifaces)
 		info["interfaces"] = ifaces
 	}
-	
+
 	return info
 }
 
@@ -387,25 +391,12 @@ func fileExists(path string) bool {
 	return !os.IsNotExist(err)
 }
 
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		
-		relPath, _ := filepath.Rel(src, path)
-		dstPath := filepath.Join(dst, relPath)
-		
-		if info.IsDir() {
-			return os.MkdirAll(dstPath, info.Mode())
-		}
-		
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(dstPath, data, info.Mode())
-	})
+func copyFile(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, mode)
 }
 
 // KNP scripts
@@ -419,8 +410,8 @@ exit 0
 func postInstallScript() string {
 	return `#!/bin/sh
 # Post-install script for HydraVPN for Router KNP package
-/opt/etc/init.d/S99podkop-plus start
-ndmq -p "component set podkop-plus state running"
+/opt/etc/init.d/S99hydravpn-router start
+ndmq -p "component set hydravpn-router state running"
 exit 0
 `
 }
@@ -428,8 +419,8 @@ exit 0
 func preUninstallScript() string {
 	return `#!/bin/sh
 # Pre-uninstall script for HydraVPN for Router KNP package
-/opt/etc/init.d/S99podkop-plus stop
-ndmq -p "component set podkop-plus state stopped"
+/opt/etc/init.d/S99hydravpn-router stop
+ndmq -p "component set hydravpn-router state stopped"
 exit 0
 `
 }
@@ -437,7 +428,7 @@ exit 0
 func postUninstallScript() string {
 	return `#!/bin/sh
 # Post-uninstall script for HydraVPN for Router KNP package
-rm -rf /opt/etc/podkop-plus /opt/var/run/podkop-plus /opt/var/log/podkop-plus.log
+rm -rf /opt/etc/hydravpn-router /opt/var/run/hydravpn-router /opt/var/log/hydravpn-router.log
 exit 0
 `
 }
@@ -445,21 +436,21 @@ exit 0
 func startScript() string {
 	return `#!/bin/sh
 # Start script for HydraVPN for Router
-/opt/etc/init.d/S99podkop-plus start
+/opt/etc/init.d/S99hydravpn-router start
 `
 }
 
 func stopScript() string {
 	return `#!/bin/sh
 # Stop script for HydraVPN for Router
-/opt/etc/init.d/S99podkop-plus stop
+/opt/etc/init.d/S99hydravpn-router stop
 `
 }
 
 func restartScript() string {
 	return `#!/bin/sh
 # Restart script for HydraVPN for Router
-/opt/etc/init.d/S99podkop-plus restart
+/opt/etc/init.d/S99hydravpn-router restart
 `
 }
 
@@ -467,8 +458,8 @@ func wanUpHook() string {
 	return `#!/bin/sh
 # WAN up hook for HydraVPN for Router
 if [ "$1" = "up" ]; then
-    logger -t podkop-plus "WAN interface $2 up, reloading"
-    /opt/bin/podkop-plus reload -c /opt/etc/podkop-plus/config.yaml
+    logger -t hydravpn-router "WAN interface $2 up, reloading"
+    /opt/bin/hydravpn-router reload -c /opt/etc/hydravpn-router/config.yaml
 fi
 `
 }
@@ -477,7 +468,7 @@ func wanDownHook() string {
 	return `#!/bin/sh
 # WAN down hook for HydraVPN for Router
 if [ "$1" = "down" ]; then
-    logger -t podkop-plus "WAN interface $2 down"
+    logger -t hydravpn-router "WAN interface $2 down"
 fi
 `
 }
@@ -485,14 +476,14 @@ fi
 func configChangedHook() string {
 	return `#!/bin/sh
 # Config changed hook for HydraVPN for Router
-logger -t podkop-plus "Configuration changed, reloading"
-/opt/bin/podkop-plus reload -c /opt/etc/podkop-plus/config.yaml
+logger -t hydravpn-router "Configuration changed, reloading"
+/opt/bin/hydravpn-router reload -c /opt/etc/hydravpn-router/config.yaml
 `
 }
 
 func knpDescriptor(version string) string {
 	return fmt.Sprintf(`{
-  "name": "podkop-plus",
+  "name": "hydravpn-router",
   "version": "%s",
   "title": "HydraVPN for Router",
   "description": "Multi-platform DPI bypass solution for KeeneticOS",
@@ -516,11 +507,11 @@ func knpDescriptor(version string) string {
   "web_ui": {
     "enabled": true,
     "port": 8080,
-    "path": "/podkop-plus",
+    "path": "/hydravpn-router",
     "title": "HydraVPN for Router"
   },
   "config": {
-    "file": "/opt/etc/podkop-plus/config.yaml",
+    "file": "/opt/etc/hydravpn-router/config.yaml",
     "web_editor": true
   },
   "hooks": {
@@ -530,4 +521,3 @@ func knpDescriptor(version string) string {
   }
 }`, version)
 }
-

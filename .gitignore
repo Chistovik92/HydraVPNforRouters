@@ -22,3 +22,7 @@ Thumbs.db
 # Temp
 tmp/
 temp/
+# Local build output
+/hydravpn-router
+coverage.out
+coverage.html

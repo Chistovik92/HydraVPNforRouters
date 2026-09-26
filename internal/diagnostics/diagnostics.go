@@ -6,46 +6,51 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	hdns "github.com/Chistovik92/hydravpn-router/internal/dns"
+	"github.com/Chistovik92/hydravpn-router/internal/firewall"
+	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/miekg/dns"
 )
 
 // Diagnostics provides system diagnostics and health checks
 type Diagnostics struct {
-	config   *config.Config
-	engine   interface{} // Will be *core.Engine
-	onLog    func(level, message string)
+	config *config.Config
+	onLog  func(level, message string)
 }
 
 // CheckResult represents a diagnostic check result
 type CheckResult struct {
-	Name        string                 `json:"name"`
-	Status      string                 `json:"status"` // "pass", "fail", "warn", "skip"
-	Message     string                 `json:"message"`
-	Details     map[string]interface{} `json:"details,omitempty"`
-	Duration    time.Duration          `json:"duration"`
-	Timestamp   time.Time              `json:"timestamp"`
+	Name      string                 `json:"name"`
+	Status    string                 `json:"status"` // "pass", "fail", "warn", "skip"
+	Message   string                 `json:"message"`
+	Details   map[string]interface{} `json:"details,omitempty"`
+	Duration  time.Duration          `json:"duration"`
+	Timestamp time.Time              `json:"timestamp"`
 }
 
 // SystemInfo represents system information
 type SystemInfo struct {
-	Platform       string                 `json:"platform"`
-	OS             string                 `json:"os"`
-	Arch           string                 `json:"arch"`
-	Kernel         string                 `json:"kernel"`
-	Hostname       string                 `json:"hostname"`
-	Uptime         string                 `json:"uptime"`
-	CPU            string                 `json:"cpu"`
-	Memory         MemoryInfo             `json:"memory"`
-	Disk           DiskInfo               `json:"disk"`
-	Network        []NetworkInterface     `json:"network"`
-	GoVersion      string                 `json:"go_version"`
-	PodkopVersion  string                 `json:"podkop_version"`
+	Platform  string             `json:"platform"`
+	OS        string             `json:"os"`
+	Arch      string             `json:"arch"`
+	Kernel    string             `json:"kernel"`
+	Hostname  string             `json:"hostname"`
+	Uptime    string             `json:"uptime"`
+	CPU       string             `json:"cpu"`
+	Memory    MemoryInfo         `json:"memory"`
+	Disk      DiskInfo           `json:"disk"`
+	Network   []NetworkInterface `json:"network"`
+	GoVersion string             `json:"go_version"`
+	Version   string             `json:"version"`
 }
 
 // MemoryInfo represents memory information
@@ -58,183 +63,190 @@ type MemoryInfo struct {
 
 // DiskInfo represents disk information
 type DiskInfo struct {
-	Total     uint64 `json:"total"`
-	Used      uint64 `json:"used"`
-	Free      uint64 `json:"free"`
-	Percent   float64 `json:"percent"`
+	Total   uint64  `json:"total"`
+	Used    uint64  `json:"used"`
+	Free    uint64  `json:"free"`
+	Percent float64 `json:"percent"`
 }
 
 // NetworkInterface represents a network interface
 type NetworkInterface struct {
-	Name        string   `json:"name"`
-	Index       int      `json:"index"`
-	MTU         int      `json:"mtu"`
-	Flags       []string `json:"flags"`
-	IPv4        []string `json:"ipv4"`
-	IPv6        []string `json:"ipv6"`
-	MAC         string   `json:"mac"`
-	Speed       uint64   `json:"speed"`
-	Driver      string   `json:"driver"`
+	Name  string   `json:"name"`
+	Index int      `json:"index"`
+	MTU   int      `json:"mtu"`
+	IPv4  []string `json:"ipv4"`
+	IPv6  []string `json:"ipv6"`
+	MAC   string   `json:"mac"`
+}
+
+type checkFunc func(d *Diagnostics, ctx context.Context) (*CheckResult, error)
+
+// checks lists the individual checks, in execution order. "global" is not
+// part of it: it summarises this list.
+var checks = []struct {
+	name string
+	fn   checkFunc
+}{
+	{"proxy", (*Diagnostics).checkProxy},
+	{"nft", (*Diagnostics).checkNFTables},
+	{"nft-rules", (*Diagnostics).checkNFTRules},
+	{"singbox", (*Diagnostics).checkSingBox},
+	{"inbounds-config", (*Diagnostics).checkInboundsConfig},
+	{"inbounds", (*Diagnostics).checkInbounds},
+	{"dns", (*Diagnostics).checkDNS},
+	{"dns-available", (*Diagnostics).checkDNSAvailable},
+	{"fakeip", (*Diagnostics).checkFakeIP},
+	{"zapret", func(d *Diagnostics, ctx context.Context) (*CheckResult, error) {
+		return d.checkProcess("zapret", "nfqws")
+	}},
+	{"zapret2", func(d *Diagnostics, ctx context.Context) (*CheckResult, error) {
+		return d.checkProcess("zapret2", "nfqws2")
+	}},
+	{"byedpi", func(d *Diagnostics, ctx context.Context) (*CheckResult, error) {
+		return d.checkProcess("byedpi", "ciadpi")
+	}},
+	{"logs", func(d *Diagnostics, ctx context.Context) (*CheckResult, error) {
+		return d.checkLogs("logs", "hydravpn-router")
+	}},
+	{"singbox-logs", func(d *Diagnostics, ctx context.Context) (*CheckResult, error) {
+		return d.checkLogs("singbox-logs", "sing-box")
+	}},
+}
+
+// CheckNames returns the names accepted by RunCheck.
+func CheckNames() []string {
+	names := make([]string, 0, len(checks)+1)
+	for _, c := range checks {
+		names = append(names, c.name)
+	}
+	return append(names, "global")
 }
 
 // NewDiagnostics creates a new diagnostics instance
 func NewDiagnostics(cfg *config.Config, onLog func(level, message string)) *Diagnostics {
-	return &Diagnostics{
-		config: cfg,
-		onLog:  onLog,
+	if onLog == nil {
+		onLog = func(string, string) {}
 	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+	return &Diagnostics{config: cfg, onLog: onLog}
 }
 
 // RunCheck runs a specific diagnostic check
 func (d *Diagnostics) RunCheck(ctx context.Context, checkName string) (*CheckResult, error) {
 	start := time.Now()
-	
+
 	var result *CheckResult
 	var err error
-	
-	switch checkName {
-	case "proxy":
-		result, err = d.checkProxy(ctx)
-	case "nft":
-		result, err = d.checkNFTables(ctx)
-	case "nft-rules":
-		result, err = d.checkNFTRules(ctx)
-	case "singbox":
-		result, err = d.checkSingBox(ctx)
-	case "inbounds-config":
-		result, err = d.checkInboundsConfig(ctx)
-	case "inbounds":
-		result, err = d.checkInbounds(ctx)
-	case "dns":
-		result, err = d.checkDNS(ctx)
-	case "dns-available":
-		result, err = d.checkDNSAvailable(ctx)
-	case "fakeip":
-		result, err = d.checkFakeIP(ctx)
-	case "zapret":
-		result, err = d.checkZapret(ctx)
-	case "zapret2":
-		result, err = d.checkZapret2(ctx)
-	case "byedpi":
-		result, err = d.checkByeDPI(ctx)
-	case "logs":
-		result, err = d.checkLogs(ctx)
-	case "singbox-logs":
-		result, err = d.checkSingBoxLogs(ctx)
-	case "global":
+	if checkName == "global" {
 		result, err = d.checkGlobal(ctx)
-	default:
-		return nil, fmt.Errorf("unknown check: %s", checkName)
+	} else {
+		found := false
+		for _, c := range checks {
+			if c.name == checkName {
+				result, err = c.fn(d, ctx)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("unknown check: %s (available: %s)", checkName, strings.Join(CheckNames(), ", "))
+		}
 	}
-	
+
 	if result != nil {
 		result.Duration = time.Since(start)
 		result.Timestamp = time.Now()
 	}
-	
 	return result, err
 }
 
-// RunAllChecks runs all diagnostic checks
+// RunAllChecks runs all individual diagnostic checks
 func (d *Diagnostics) RunAllChecks(ctx context.Context) ([]*CheckResult, error) {
-	checks := []string{
-		"proxy", "nft", "nft-rules", "singbox", 
-		"inbounds-config", "inbounds", "dns", 
-		"dns-available", "fakeip", "zapret", "zapret2", 
-		"byedpi", "logs", "singbox-logs", "global",
-	}
-	
 	var results []*CheckResult
-	for _, check := range checks {
-		result, err := d.RunCheck(ctx, check)
+	for _, c := range checks {
+		if ctx.Err() != nil {
+			return results, ctx.Err()
+		}
+		result, err := d.RunCheck(ctx, c.name)
 		if err != nil {
-			d.onLog("warn", fmt.Sprintf("Check %s failed: %v", check, err))
-			result = &CheckResult{
-				Name:      check,
-				Status:    "fail",
-				Message:   err.Error(),
-				Duration:  0,
-				Timestamp: time.Now(),
-			}
+			d.onLog("warn", fmt.Sprintf("Check %s failed: %v", c.name, err))
+			result = &CheckResult{Name: c.name, Status: "fail", Message: err.Error(), Timestamp: time.Now()}
 		}
 		results = append(results, result)
 	}
-	
 	return results, nil
 }
 
 // GetSystemInfo returns system information
 func (d *Diagnostics) GetSystemInfo() (*SystemInfo, error) {
 	info := &SystemInfo{
-		Platform:      runtime.GOOS,
-		OS:            runtime.GOOS,
-		Arch:          runtime.GOARCH,
-		GoVersion:     runtime.Version(),
-		PodkopVersion: "1.0.0",
+		Platform:  runtime.GOOS,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		GoVersion: runtime.Version(),
+		Version:   version.Version,
 	}
-	
-	// Get kernel version
+
 	if out, err := exec.Command("uname", "-r").Output(); err == nil {
 		info.Kernel = strings.TrimSpace(string(out))
 	}
-	
-	// Get hostname
-	if hostname, err := exec.Command("hostname").Output(); err == nil {
-		info.Hostname = strings.TrimSpace(string(hostname))
+	if hostname, err := os.Hostname(); err == nil {
+		info.Hostname = hostname
 	}
-	
-	// Get uptime
-	if out, err := exec.Command("cat", "/proc/uptime").Output(); err == nil {
-		fields := strings.Fields(string(out))
-		if len(fields) > 0 {
-			if uptimeSec, err := parseFloat(fields[0]); err == nil {
-				info.Uptime = time.Duration(uptimeSec * float64(time.Second)).String()
+	if out, err := os.ReadFile("/proc/uptime"); err == nil {
+		if fields := strings.Fields(string(out)); len(fields) > 0 {
+			if sec, err := strconv.ParseFloat(fields[0], 64); err == nil {
+				info.Uptime = time.Duration(sec * float64(time.Second)).Round(time.Second).String()
 			}
 		}
 	}
-	
-	// Get CPU info
-	if out, err := exec.Command("cat", "/proc/cpuinfo").Output(); err == nil {
-		lines := strings.Split(string(out), "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "model name") || strings.HasPrefix(line, "Hardware") {
-				info.CPU = strings.TrimSpace(strings.Split(line, ":")[1])
-				break
-			}
-		}
-	}
-	
-	// Get memory info
-	if out, err := exec.Command("cat", "/proc/meminfo").Output(); err == nil {
-		lines := strings.Split(string(out), "\n")
-		mem := MemoryInfo{}
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				switch fields[0] {
-				case "MemTotal:":
-					mem.Total = parseUint(fields[1]) * 1024
-				case "MemAvailable:":
-					mem.Available = parseUint(fields[1]) * 1024
-				case "MemFree:":
-					mem.Free = parseUint(fields[1]) * 1024
+	if out, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "model name") || strings.HasPrefix(line, "Hardware") || strings.HasPrefix(line, "cpu model") {
+				if _, v, ok := strings.Cut(line, ":"); ok {
+					info.CPU = strings.TrimSpace(v)
+					break
 				}
 			}
 		}
-		mem.Used = mem.Total - mem.Available
+	}
+	if out, err := os.ReadFile("/proc/meminfo"); err == nil {
+		mem := MemoryInfo{}
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			v, _ := strconv.ParseUint(fields[1], 10, 64)
+			switch fields[0] {
+			case "MemTotal:":
+				mem.Total = v * 1024
+			case "MemAvailable:":
+				mem.Available = v * 1024
+			case "MemFree:":
+				mem.Free = v * 1024
+			}
+		}
+		// Old kernels have no MemAvailable.
+		if mem.Available == 0 {
+			mem.Available = mem.Free
+		}
+		if mem.Total >= mem.Available {
+			mem.Used = mem.Total - mem.Available
+		}
 		info.Memory = mem
 	}
-	
-	// Get disk info
-	if out, err := exec.Command("df", "-B1", "/").Output(); err == nil {
+	// BusyBox df has no -B; -k works everywhere.
+	if out, err := exec.Command("df", "-k", "/").Output(); err == nil {
 		lines := strings.Split(string(out), "\n")
 		if len(lines) > 1 {
-			fields := strings.Fields(lines[1])
-			if len(fields) >= 4 {
-				disk := DiskInfo{}
-				disk.Total = parseUint(fields[1])
-				disk.Used = parseUint(fields[2])
-				disk.Free = parseUint(fields[3])
+			if fields := strings.Fields(lines[1]); len(fields) >= 4 {
+				total, _ := strconv.ParseUint(fields[1], 10, 64)
+				used, _ := strconv.ParseUint(fields[2], 10, 64)
+				free, _ := strconv.ParseUint(fields[3], 10, 64)
+				disk := DiskInfo{Total: total * 1024, Used: used * 1024, Free: free * 1024}
 				if disk.Total > 0 {
 					disk.Percent = float64(disk.Used) / float64(disk.Total) * 100
 				}
@@ -242,21 +254,13 @@ func (d *Diagnostics) GetSystemInfo() (*SystemInfo, error) {
 			}
 		}
 	}
-	
-	// Get network interfaces
+
 	ifaces, _ := net.Interfaces()
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		
-		ni := NetworkInterface{
-			Name:  iface.Name,
-			Index: iface.Index,
-			MTU:   iface.MTU,
-			MAC:   iface.HardwareAddr.String(),
-		}
-		
+		ni := NetworkInterface{Name: iface.Name, Index: iface.Index, MTU: iface.MTU, MAC: iface.HardwareAddr.String()}
 		addrs, _ := iface.Addrs()
 		for _, addr := range addrs {
 			if ipnet, ok := addr.(*net.IPNet); ok {
@@ -267,12 +271,11 @@ func (d *Diagnostics) GetSystemInfo() (*SystemInfo, error) {
 				}
 			}
 		}
-		
 		if len(ni.IPv4) > 0 || len(ni.IPv6) > 0 {
 			info.Network = append(info.Network, ni)
 		}
 	}
-	
+
 	return info, nil
 }
 
@@ -286,88 +289,73 @@ func (d *Diagnostics) GetSystemInfoJSON() (string, error) {
 	return string(data), nil
 }
 
-// Check implementations
 func (d *Diagnostics) checkProxy(ctx context.Context) (*CheckResult, error) {
-	// Check if we can reach internet through proxy
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("https://www.gstatic.com/generate_204")
+	testURL := d.config.Settings.LatencyTestURL
+	if testURL == "" {
+		testURL = "https://www.gstatic.com/generate_204"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
 	if err != nil {
-		return &CheckResult{
-			Name:    "proxy",
-			Status:  "fail",
-			Message: fmt.Sprintf("Proxy connectivity failed: %v", err),
-		}, nil
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return &CheckResult{Name: "proxy", Status: "fail", Message: fmt.Sprintf("Connectivity check failed: %v", err)}, nil
 	}
 	defer resp.Body.Close()
-	
-	if resp.StatusCode == 204 || resp.StatusCode == 200 {
-		return &CheckResult{
-			Name:    "proxy",
-			Status:  "pass",
-			Message: "Proxy connectivity OK",
-		}, nil
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return &CheckResult{Name: "proxy", Status: "pass", Message: "Connectivity OK"}, nil
 	}
-	
-	return &CheckResult{
-		Name:    "proxy",
-		Status:  "warn",
-		Message: fmt.Sprintf("Proxy returned status %d", resp.StatusCode),
-	}, nil
+	return &CheckResult{Name: "proxy", Status: "warn", Message: fmt.Sprintf("%s returned status %d", testURL, resp.StatusCode)}, nil
 }
 
 func (d *Diagnostics) checkNFTables(ctx context.Context) (*CheckResult, error) {
-	// Check if nftables is available and our table exists
-	out, err := exec.Command("nft", "list", "table", "inet", "podkop").Output()
-	if err != nil {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return &CheckResult{Name: "nft", Status: "skip", Message: "nft is not installed"}, nil
+	}
+	if err := exec.CommandContext(ctx, "nft", "list", "table", "inet", firewall.TableName).Run(); err != nil {
 		return &CheckResult{
 			Name:    "nft",
 			Status:  "fail",
-			Message: "nftables table 'podkop' not found",
+			Message: fmt.Sprintf("nftables table '%s' not found", firewall.TableName),
 			Details: map[string]interface{}{"error": err.Error()},
 		}, nil
 	}
-	
-	return &CheckResult{
-		Name:    "nft",
-		Status:  "pass",
-		Message: "nftables table 'podkop' exists",
-		Details: map[string]interface{}{"output": string(out)},
-	}, nil
+	return &CheckResult{Name: "nft", Status: "pass", Message: fmt.Sprintf("nftables table '%s' exists", firewall.TableName)}, nil
 }
 
 func (d *Diagnostics) checkNFTRules(ctx context.Context) (*CheckResult, error) {
-	// Check nftables rules
-	out, err := exec.Command("nft", "list", "ruleset").Output()
-	if err != nil {
-		return &CheckResult{
-			Name:    "nft-rules",
-			Status:  "fail",
-			Message: "Failed to list nftables rules",
-		}, nil
+	if _, err := exec.LookPath("nft"); err != nil {
+		return &CheckResult{Name: "nft-rules", Status: "skip", Message: "nft is not installed"}, nil
 	}
-	
-	rulesCount := strings.Count(string(out), "\n")
+	out, err := exec.CommandContext(ctx, "nft", "list", "table", "inet", firewall.TableName).Output()
+	if err != nil {
+		return &CheckResult{Name: "nft-rules", Status: "fail", Message: "Failed to list nftables rules"}, nil
+	}
+	n := strings.Count(string(out), "tproxy")
+	if n == 0 {
+		return &CheckResult{Name: "nft-rules", Status: "fail", Message: "No tproxy rules in table " + firewall.TableName}, nil
+	}
 	return &CheckResult{
 		Name:    "nft-rules",
 		Status:  "pass",
-		Message: fmt.Sprintf("nftables rules loaded (%d lines)", rulesCount),
-		Details: map[string]interface{}{"rules_count": rulesCount},
+		Message: fmt.Sprintf("%d tproxy rules loaded", n),
+		Details: map[string]interface{}{"tproxy_rules": n},
 	}, nil
 }
 
 func (d *Diagnostics) checkSingBox(ctx context.Context) (*CheckResult, error) {
-	// Check if sing-box is installed
-	path, err := exec.LookPath("sing-box")
-	if err != nil {
-		return &CheckResult{
-			Name:    "singbox",
-			Status:  "fail",
-			Message: "sing-box not found in PATH",
-		}, nil
+	bin := d.config.Settings.SingBoxBinary
+	if bin == "" {
+		bin = "sing-box"
 	}
-	
-	// Check version
-	out, err := exec.Command(path, "version").Output()
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return &CheckResult{Name: "singbox", Status: "fail", Message: bin + " not found"}, nil
+	}
+
+	out, err := exec.CommandContext(ctx, path, "version").Output()
 	if err != nil {
 		return &CheckResult{
 			Name:    "singbox",
@@ -376,89 +364,90 @@ func (d *Diagnostics) checkSingBox(ctx context.Context) (*CheckResult, error) {
 			Details: map[string]interface{}{"path": path, "error": err.Error()},
 		}, nil
 	}
-	
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	return &CheckResult{
 		Name:    "singbox",
 		Status:  "pass",
-		Message: "sing-box available",
+		Message: firstLine,
 		Details: map[string]interface{}{"path": path, "version": string(out)},
 	}, nil
 }
 
 func (d *Diagnostics) checkInboundsConfig(ctx context.Context) (*CheckResult, error) {
-	// Check if inbound configurations exist
 	configPath := d.config.Settings.ConfigPath
 	if configPath == "" {
-		configPath = "/etc/podkop-plus/sing-box/config.json"
+		configPath = config.DefaultConfigDir + "/sing-box/config.json"
 	}
-	
-	if _, err := exec.Command("test", "-f", configPath).Output(); err != nil {
-		return &CheckResult{
-			Name:    "inbounds-config",
-			Status:  "fail",
-			Message: "sing-box config file not found",
-			Details: map[string]interface{}{"path": configPath},
-		}, nil
+	details := map[string]interface{}{"path": configPath}
+
+	if _, err := os.Stat(configPath); err != nil {
+		return &CheckResult{Name: "inbounds-config", Status: "fail", Message: "sing-box config file not found", Details: details}, nil
 	}
-	
-	return &CheckResult{
-		Name:    "inbounds-config",
-		Status:  "pass",
-		Message: "sing-box config file exists",
-		Details: map[string]interface{}{"path": configPath},
-	}, nil
+
+	bin := d.config.Settings.SingBoxBinary
+	if bin == "" {
+		bin = "sing-box"
+	}
+	if path, err := exec.LookPath(bin); err == nil {
+		if out, err := exec.CommandContext(ctx, path, "check", "-c", configPath).CombinedOutput(); err != nil {
+			details["output"] = strings.TrimSpace(string(out))
+			return &CheckResult{Name: "inbounds-config", Status: "fail", Message: "sing-box rejects the generated config", Details: details}, nil
+		}
+	}
+	return &CheckResult{Name: "inbounds-config", Status: "pass", Message: "sing-box config file is valid", Details: details}, nil
 }
 
 func (d *Diagnostics) checkInbounds(ctx context.Context) (*CheckResult, error) {
-	// Check if inbound ports are listening
-	ports := []int{1602, 53, 4534}
-	var listening []int
-	
-	for _, port := range ports {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
-		if err == nil {
-			conn.Close()
-			listening = append(listening, port)
+	// A direct connection to the tproxy port would be proxied back to
+	// itself, so that one is checked via /proc/net instead.
+	endpoints := map[string]bool{
+		fmt.Sprintf("tproxy :%d", config.TProxyPort):             listeningTCP(config.TProxyPort),
+		fmt.Sprintf("mixed 127.0.0.1:%d", config.MixedProxyPort): dialOK(fmt.Sprintf("127.0.0.1:%d", config.MixedProxyPort)),
+		fmt.Sprintf("dns %s:53", config.DNSListenAddress):        dnsOK(net.JoinHostPort(config.DNSListenAddress, "53")),
+	}
+	var expected, listening []string
+	for name, ok := range endpoints {
+		expected = append(expected, name)
+		if ok {
+			listening = append(listening, name)
 		}
 	}
-	
-	if len(listening) == len(ports) {
+	sort.Strings(expected)
+	sort.Strings(listening)
+
+	switch {
+	case len(listening) == len(expected):
+		return &CheckResult{Name: "inbounds", Status: "pass", Message: fmt.Sprintf("All inbounds listening: %v", listening)}, nil
+	case len(listening) > 0:
+		return &CheckResult{Name: "inbounds", Status: "warn", Message: fmt.Sprintf("Some inbounds listening: %v (expected: %v)", listening, expected)}, nil
+	default:
 		return &CheckResult{
 			Name:    "inbounds",
-			Status:  "pass",
-			Message: fmt.Sprintf("All inbound ports listening: %v", listening),
+			Status:  "fail",
+			Message: "No inbounds listening",
+			Details: map[string]interface{}{"expected": expected},
 		}, nil
 	}
-	
-	if len(listening) > 0 {
-		return &CheckResult{
-			Name:    "inbounds",
-			Status:  "warn",
-			Message: fmt.Sprintf("Some inbound ports listening: %v (expected: %v)", listening, ports),
-		}, nil
+}
+
+func exchange(server string) (*dns.Msg, time.Duration, error) {
+	addr, network, ok := hdns.ServerAddress(server)
+	if !ok {
+		return nil, 0, fmt.Errorf("transport of %s cannot be checked", server)
 	}
-	
-	return &CheckResult{
-		Name:    "inbounds",
-		Status:  "fail",
-		Message: "No inbound ports listening",
-		Details: map[string]interface{}{"expected_ports": ports, "listening": listening},
-	}, nil
+	msg := new(dns.Msg)
+	msg.SetQuestion("google.com.", dns.TypeA)
+	return (&dns.Client{Timeout: 2 * time.Second, Net: network}).Exchange(msg, addr)
 }
 
 func (d *Diagnostics) checkDNS(ctx context.Context) (*CheckResult, error) {
-	// Test DNS resolution
 	servers := d.config.Settings.DNSServers
 	if len(servers) == 0 {
 		servers = []string{"77.88.8.8", "77.88.8.1"}
 	}
-	
+
 	for _, server := range servers {
-		client := &dns.Client{Timeout: 2 * time.Second}
-		msg := new(dns.Msg)
-		msg.SetQuestion("google.com.", dns.TypeA)
-		
-		r, _, err := client.Exchange(msg, server+":53")
+		r, _, err := exchange(server)
 		if err == nil && r != nil && len(r.Answer) > 0 {
 			return &CheckResult{
 				Name:    "dns",
@@ -468,7 +457,7 @@ func (d *Diagnostics) checkDNS(ctx context.Context) (*CheckResult, error) {
 			}, nil
 		}
 	}
-	
+
 	return &CheckResult{
 		Name:    "dns",
 		Status:  "fail",
@@ -478,302 +467,194 @@ func (d *Diagnostics) checkDNS(ctx context.Context) (*CheckResult, error) {
 }
 
 func (d *Diagnostics) checkDNSAvailable(ctx context.Context) (*CheckResult, error) {
-	// Check all configured DNS servers
-	servers := append(d.config.Settings.DNSServers, d.config.Settings.BootstrapDNSServers...)
-	
+	// Copy to avoid appending into the config's backing array.
+	servers := append(append([]string(nil), d.config.Settings.DNSServers...), d.config.Settings.BootstrapDNSServers...)
+
 	var results []map[string]interface{}
-	allFail := true
-	
+	failures := 0
 	for _, server := range servers {
-		client := &dns.Client{Timeout: 2 * time.Second}
-		msg := new(dns.Msg)
-		msg.SetQuestion("google.com.", dns.TypeA)
-		
-		start := time.Now()
-		r, _, err := client.Exchange(msg, server+":53")
-		duration := time.Since(start)
-		
-		result := map[string]interface{}{
-			"server":   server,
-			"duration": duration.String(),
-		}
-		
+		r, rtt, err := exchange(server)
+		result := map[string]interface{}{"server": server, "duration": rtt.String()}
 		if err == nil && r != nil && len(r.Answer) > 0 {
 			result["status"] = "ok"
 			result["answers"] = len(r.Answer)
-			allFail = false
 		} else {
+			failures++
 			result["status"] = "fail"
 			result["error"] = fmt.Sprintf("%v", err)
 		}
-		
 		results = append(results, result)
 	}
-	
+
 	status := "pass"
-	if allFail {
+	switch {
+	case len(servers) == 0 || failures == len(servers):
 		status = "fail"
-	} else if len(results) > 1 {
+	case failures > 0:
 		status = "warn"
 	}
-	
+
 	return &CheckResult{
 		Name:    "dns-available",
 		Status:  status,
-		Message: fmt.Sprintf("DNS availability check: %d servers tested", len(servers)),
+		Message: fmt.Sprintf("%d of %d DNS servers answered", len(servers)-failures, len(servers)),
 		Details: map[string]interface{}{"results": results},
 	}, nil
 }
 
 func (d *Diagnostics) checkFakeIP(ctx context.Context) (*CheckResult, error) {
-	// Test FakeIP DNS resolution
-	client := &dns.Client{Timeout: 2 * time.Second}
-	msg := new(dns.Msg)
-	msg.SetQuestion("fakeip.podkop.fyi.", dns.TypeA)
-	
-	// Use local DNS inbound
-	r, _, err := client.Exchange(msg, "127.0.0.42:53")
-	if err != nil {
-		return &CheckResult{
-			Name:    "fakeip",
-			Status:  "fail",
-			Message: fmt.Sprintf("FakeIP DNS query failed: %v", err),
-		}, nil
+	if !d.config.Settings.FakeIPEnabled {
+		return &CheckResult{Name: "fakeip", Status: "skip", Message: "FakeIP is disabled"}, nil
 	}
-	
-	if r != nil && len(r.Answer) > 0 {
-		for _, ans := range r.Answer {
-			if a, ok := ans.(*dns.A); ok {
-				ip := a.A.String()
-				if strings.HasPrefix(ip, "198.18.") {
-					return &CheckResult{
-						Name:    "fakeip",
-						Status:  "pass",
-						Message: fmt.Sprintf("FakeIP working: %s", ip),
-						Details: map[string]interface{}{"fakeip": ip},
-					}, nil
-				}
+
+	msg := new(dns.Msg)
+	msg.SetQuestion("fakeip.example.com.", dns.TypeA)
+	r, _, err := (&dns.Client{Timeout: 2 * time.Second}).Exchange(msg, net.JoinHostPort(config.DNSListenAddress, "53"))
+	if err != nil {
+		return &CheckResult{Name: "fakeip", Status: "fail", Message: fmt.Sprintf("FakeIP DNS query failed: %v", err)}, nil
+	}
+
+	for _, ans := range r.Answer {
+		if a, ok := ans.(*dns.A); ok {
+			_, fakeNet, _ := net.ParseCIDR("198.18.0.0/15")
+			if fakeNet.Contains(a.A) {
+				return &CheckResult{
+					Name:    "fakeip",
+					Status:  "pass",
+					Message: fmt.Sprintf("FakeIP working: %s", a.A),
+					Details: map[string]interface{}{"fakeip": a.A.String()},
+				}, nil
 			}
 		}
 	}
-	
+
 	return &CheckResult{
 		Name:    "fakeip",
 		Status:  "warn",
-		Message: "FakeIP DNS responded but no FakeIP address",
+		Message: "DNS responded but returned no FakeIP address",
 		Details: map[string]interface{}{"answers": len(r.Answer)},
 	}, nil
 }
 
-func (d *Diagnostics) checkZapret(ctx context.Context) (*CheckResult, error) {
-	// Check if zapret/nfqws is running
-	path, err := exec.LookPath("nfqws")
+// checkProcess checks that a provider binary runs (exact process name).
+func (d *Diagnostics) checkProcess(name, proc string) (*CheckResult, error) {
+	out, err := exec.Command("pgrep", "-x", proc).Output()
 	if err != nil {
-		return &CheckResult{
-			Name:    "zapret",
-			Status:  "skip",
-			Message: "zapret (nfqws) not installed",
-		}, nil
+		return &CheckResult{Name: name, Status: "skip", Message: proc + " is not running"}, nil
 	}
-	
-	// Check process
-	out, err := exec.Command("pgrep", "-f", "nfqws").Output()
-	if err != nil {
-		return &CheckResult{
-			Name:    "zapret",
-			Status:  "fail",
-			Message: "zapret process not running",
-		}, nil
-	}
-	
 	pids := strings.Fields(string(out))
 	return &CheckResult{
-		Name:    "zapret",
+		Name:    name,
 		Status:  "pass",
-		Message: fmt.Sprintf("zapret running (PIDs: %v)", pids),
-		Details: map[string]interface{}{"pids": pids, "binary": path},
+		Message: fmt.Sprintf("%s running (PIDs: %v)", proc, pids),
+		Details: map[string]interface{}{"pids": pids},
 	}, nil
 }
 
-func (d *Diagnostics) checkZapret2(ctx context.Context) (*CheckResult, error) {
-	// Check if zapret2/nfqws2 is running
-	path, err := exec.LookPath("nfqws2")
+func (d *Diagnostics) checkLogs(name, tag string) (*CheckResult, error) {
+	out, err := readLogs(tag)
 	if err != nil {
 		return &CheckResult{
-			Name:    "zapret2",
-			Status:  "skip",
-			Message: "zapret2 (nfqws2) not installed",
-		}, nil
-	}
-	
-	out, err := exec.Command("pgrep", "-f", "nfqws2").Output()
-	if err != nil {
-		return &CheckResult{
-			Name:    "zapret2",
-			Status:  "fail",
-			Message: "zapret2 process not running",
-		}, nil
-	}
-	
-	pids := strings.Fields(string(out))
-	return &CheckResult{
-		Name:    "zapret2",
-		Status:  "pass",
-		Message: fmt.Sprintf("zapret2 running (PIDs: %v)", pids),
-		Details: map[string]interface{}{"pids": pids, "binary": path},
-	}, nil
-}
-
-func (d *Diagnostics) checkByeDPI(ctx context.Context) (*CheckResult, error) {
-	// Check if ciadpi (ByeDPI) is running
-	path, err := exec.LookPath("ciadpi")
-	if err != nil {
-		return &CheckResult{
-			Name:    "byedpi",
-			Status:  "skip",
-			Message: "ByeDPI (ciadpi) not installed",
-		}, nil
-	}
-	
-	out, err := exec.Command("pgrep", "-f", "ciadpi").Output()
-	if err != nil {
-		return &CheckResult{
-			Name:    "byedpi",
-			Status:  "fail",
-			Message: "ByeDPI process not running",
-		}, nil
-	}
-	
-	pids := strings.Fields(string(out))
-	return &CheckResult{
-		Name:    "byedpi",
-		Status:  "pass",
-		Message: fmt.Sprintf("ByeDPI running (PIDs: %v)", pids),
-		Details: map[string]interface{}{"pids": pids, "binary": path},
-	}, nil
-}
-
-func (d *Diagnostics) checkLogs(ctx context.Context) (*CheckResult, error) {
-	// Check system logs for podkop-plus
-	out, err := exec.Command("journalctl", "-u", "podkop-plus", "--no-pager", "-n", "10").Output()
-	if err != nil {
-		return &CheckResult{
-			Name:    "logs",
+			Name:    name,
 			Status:  "warn",
 			Message: "Could not retrieve logs",
 			Details: map[string]interface{}{"error": err.Error()},
 		}, nil
 	}
-	
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	text := strings.TrimSpace(string(out))
+	var lines []string
+	if text != "" {
+		lines = strings.Split(text, "\n")
+	}
 	return &CheckResult{
-		Name:    "logs",
+		Name:    name,
 		Status:  "pass",
 		Message: fmt.Sprintf("Retrieved %d log lines", len(lines)),
 		Details: map[string]interface{}{"lines": len(lines), "recent": lines},
 	}, nil
 }
 
-func (d *Diagnostics) checkSingBoxLogs(ctx context.Context) (*CheckResult, error) {
-	// Check sing-box logs
-	out, err := exec.Command("journalctl", "-u", "sing-box", "--no-pager", "-n", "10").Output()
-	if err != nil {
-		return &CheckResult{
-			Name:    "singbox-logs",
-			Status:  "warn",
-			Message: "Could not retrieve sing-box logs",
-		}, nil
-	}
-	
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	return &CheckResult{
-		Name:    "singbox-logs",
-		Status:  "pass",
-		Message: fmt.Sprintf("Retrieved %d sing-box log lines", len(lines)),
-		Details: map[string]interface{}{"lines": len(lines)},
-	}, nil
-}
-
 func (d *Diagnostics) checkGlobal(ctx context.Context) (*CheckResult, error) {
-	// Run all checks and summarize
 	results, _ := d.RunAllChecks(ctx)
-	
-	passed := 0
-	failed := 0
-	warned := 0
-	skipped := 0
-	
+
+	counts := map[string]int{}
 	for _, r := range results {
-		switch r.Status {
-		case "pass":
-			passed++
-		case "fail":
-			failed++
-		case "warn":
-			warned++
-		case "skip":
-			skipped++
-		}
+		counts[r.Status]++
 	}
-	
+
 	status := "pass"
-	if failed > 0 {
+	if counts["fail"] > 0 {
 		status = "fail"
-	} else if warned > 0 {
+	} else if counts["warn"] > 0 {
 		status = "warn"
 	}
-	
+
 	return &CheckResult{
 		Name:    "global",
 		Status:  status,
-		Message: fmt.Sprintf("Global check: %d pass, %d fail, %d warn, %d skip", passed, failed, warned, skipped),
+		Message: fmt.Sprintf("Global check: %d pass, %d fail, %d warn, %d skip", counts["pass"], counts["fail"], counts["warn"], counts["skip"]),
 		Details: map[string]interface{}{
-			"passed":  passed,
-			"failed":  failed,
-			"warned":  warned,
-			"skipped": skipped,
+			"passed":  counts["pass"],
+			"failed":  counts["fail"],
+			"warned":  counts["warn"],
+			"skipped": counts["skip"],
 			"checks":  results,
 		},
 	}, nil
 }
 
-// ValidateNFQWSStrategy validates an NFQWS strategy
-func (d *Diagnostics) ValidateNFQWSStrategy(strategy string) (*CheckResult, error) {
-	// This would validate the strategy syntax
-	return &CheckResult{
-		Name:    "validate-nfqws-strategy",
-		Status:  "pass",
-		Message: "Strategy validation not implemented",
-	}, nil
+// readLogs returns recent log lines from journald or, on OpenWrt/Keenetic,
+// from logread.
+func readLogs(tag string) ([]byte, error) {
+	if _, err := exec.LookPath("journalctl"); err == nil {
+		return exec.Command("journalctl", "-u", tag, "--no-pager", "-n", "10").Output()
+	}
+	if _, err := exec.LookPath("logread"); err == nil {
+		out, err := exec.Command("logread", "-e", tag).Output()
+		if err != nil {
+			return nil, err
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) > 10 {
+			lines = lines[len(lines)-10:]
+		}
+		return []byte(strings.Join(lines, "\n")), nil
+	}
+	return nil, fmt.Errorf("neither journalctl nor logread is available")
 }
 
-// ValidateNFQWS2Strategy validates an NFQWS2 strategy
-func (d *Diagnostics) ValidateNFQWS2Strategy(strategy string) (*CheckResult, error) {
-	return &CheckResult{
-		Name:    "validate-nfqws2-strategy",
-		Status:  "pass",
-		Message: "Strategy validation not implemented",
-	}, nil
+// listeningTCP reports whether a TCP socket listens on port (Linux /proc).
+func listeningTCP(port int) bool {
+	hexPort := fmt.Sprintf(":%04X", port)
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines[1:] {
+			fields := strings.Fields(line)
+			// fields[1] = local address, fields[3] = state (0A = LISTEN)
+			if len(fields) > 3 && strings.HasSuffix(fields[1], hexPort) && fields[3] == "0A" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// ValidateByeDPIStrategy validates a ByeDPI strategy
-func (d *Diagnostics) ValidateByeDPIStrategy(strategy string) (*CheckResult, error) {
-	return &CheckResult{
-		Name:    "validate-byedpi-strategy",
-		Status:  "pass",
-		Message: "Strategy validation not implemented",
-	}, nil
+func dialOK(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
-func parseFloat(s string) (float64, error) {
-	var f float64
-	_, err := fmt.Sscanf(s, "%f", &f)
-	return f, err
+func dnsOK(addr string) bool {
+	msg := new(dns.Msg)
+	msg.SetQuestion("google.com.", dns.TypeA)
+	_, _, err := (&dns.Client{Timeout: 2 * time.Second}).Exchange(msg, addr)
+	return err == nil
 }
-
-func parseUint(s string) uint64 {
-	var u uint64
-	fmt.Sscanf(s, "%d", &u)
-	return u
-}
-

@@ -4,51 +4,56 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/process"
 )
 
-// Provider manages zapret/zapret2/nfqws
+const stopTimeout = 5 * time.Second
+
+// DefaultQueueNum is the NFQUEUE number shared with the firewall rules.
+const DefaultQueueNum = 4000
+
+// DesyncMark is the fwmark nfqws/nfqws2 put on their own packets by default;
+// the firewall excludes packets carrying it from the queue to avoid loops.
+const DesyncMark = "0x40000000"
+
+// Default strategies. They only use documented nfqws/nfqws2 options and can
+// be replaced per section with "provider_options".
+const (
+	defaultZapretStrategy = `--filter-tcp=80 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig
+--new
+--filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-repeats=11 --dpi-desync-fooling=md5sig --dpi-desync-fake-tls-mod=rnd,dupsid,sni=www.google.com
+--new
+--filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=11`
+
+	defaultZapret2Strategy = `--lua-init=@/opt/zapret2/lua/zapret-lib.lua --lua-init=@/opt/zapret2/lua/zapret-antidpi.lua
+--filter-tcp=80 --filter-l7=http --payload=http_req --lua-desync=fake:blob=fake_default_http:tcp_md5 --lua-desync=multisplit:pos=method+2
+--new
+--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:tcp_md5 --lua-desync=multidisorder:pos=1,midsld
+--new
+--filter-udp=443 --filter-l7=quic --payload=quic_initial --lua-desync=fake:blob=fake_default_quic:repeats=6`
+)
+
+// Provider manages zapret/zapret2 (nfqws/nfqws2)
 type Provider struct {
-	mu          sync.RWMutex
-	config      *Config
-	ctx         context.Context
-	cancel      context.CancelFunc
-	cmd         *exec.Cmd
-	started     bool
-	onLog       func(level, message string)
-	wg          sync.WaitGroup
-	
-	// Status
-	startTime   time.Time
-	restarts    int
-	lastError   string
-	activeConns int
+	mu     sync.RWMutex
+	config *Config
+	proc   *process.Supervisor
+	onLog  func(level, message string)
 }
 
 // Config represents zapret configuration
 type Config struct {
-	BinaryPath      string
-	ConfigPath      string
-	StrategyFile    string
-	HostlistDir     string
-	IPSetDir        string
-	LogDir          string
-	PIDDir          string
-	StateDir        string
-	NFQWSOptions    string
-	QueueNum        int
-	Mark            string
-	DesyncMark      string
-	DesyncMarkPost  string
-	RespawnDelay    int
-	ProviderType    string // "zapret" or "zapret2"
+	BinaryPath   string
+	QueueNum     int
+	Options      string // custom strategy, replaces the default one
+	RespawnDelay int
+	ProviderType string // "zapret" or "zapret2"
 }
 
 // Options for creating a new provider
@@ -59,182 +64,109 @@ type Options struct {
 
 // NewProvider creates a new zapret provider
 func NewProvider(opts Options) *Provider {
-	ctx, cancel := context.WithCancel(context.Background())
-	
-	p := &Provider{
-		config: opts.Config,
-		ctx:    ctx,
-		cancel: cancel,
+	c := withDefaults(opts.Config)
+	return &Provider{
+		config: c,
 		onLog:  opts.OnLog,
+		proc: &process.Supervisor{
+			Name:         c.ProviderType,
+			RespawnDelay: time.Duration(c.RespawnDelay) * time.Second,
+			OnLog:        opts.OnLog,
+		},
 	}
-	
-	if p.config == nil {
-		p.config = &Config{}
-	}
-	
-	if p.config.BinaryPath == "" {
-		p.config.BinaryPath = "nfqws"
-	}
-	if p.config.ConfigPath == "" {
-		p.config.ConfigPath = "/etc/podkop-plus/zapret/config.json"
-	}
-	if p.config.StateDir == "" {
-		p.config.StateDir = "/var/run/podkop-plus/zapret"
-	}
-	if p.config.QueueNum == 0 {
-		p.config.QueueNum = 4000
-	}
-	if p.config.Mark == "" {
-		p.config.Mark = "0x01000000"
-	}
-	if p.config.DesyncMark == "" {
-		p.config.DesyncMark = "0x40000000"
-	}
-	if p.config.DesyncMarkPost == "" {
-		p.config.DesyncMarkPost = "0x20000000"
-	}
-	if p.config.RespawnDelay == 0 {
-		p.config.RespawnDelay = 5
-	}
-	if p.config.ProviderType == "" {
-		p.config.ProviderType = "zapret2"
-	}
-	
-	return p
 }
 
-// ConfigFromPodkop creates zapret config from Podkop config
-func ConfigFromPodkop(cfg *config.Config) *Config {
-	c := &Config{
-		ConfigPath:  "/etc/podkop-plus/zapret/config.json",
-		StateDir:    "/var/run/podkop-plus/zapret",
-		ProviderType: "zapret2",
-		QueueNum:     4000,
-		Mark:         "0x01000000",
-		DesyncMark:   "0x40000000",
-		DesyncMarkPost: "0x20000000",
-		RespawnDelay: 5,
+func withDefaults(c *Config) *Config {
+	if c == nil {
+		c = &Config{}
 	}
-	
-	// Determine binary based on provider type
-	if c.ProviderType == "zapret2" {
-		c.BinaryPath = "/opt/zapret2/nfq2/nfqws2"
-		c.StrategyFile = "/etc/podkop-plus/zapret/strategy.json"
-	} else {
-		c.BinaryPath = "/opt/zapret/nfq/nfqws"
-		c.StrategyFile = "/etc/podkop-plus/zapret/strategy"
+	if c.ProviderType == "" {
+		c.ProviderType = string(config.ProviderTypeZapret2)
 	}
-	
+	if c.BinaryPath == "" {
+		if c.ProviderType == string(config.ProviderTypeZapret2) {
+			c.BinaryPath = "/opt/zapret2/nfq2/nfqws2"
+		} else {
+			c.BinaryPath = "/opt/zapret/nfq/nfqws"
+		}
+	}
+	if c.QueueNum == 0 {
+		c.QueueNum = DefaultQueueNum
+	}
+	if c.RespawnDelay == 0 {
+		c.RespawnDelay = 5
+	}
 	return c
+}
+
+// ConfigFromPodkop creates zapret config from the HydraVPN config.
+// zapret2 wins when both zapret and zapret2 sections are enabled.
+func ConfigFromPodkop(cfg *config.Config) *Config {
+	pt := config.ProviderTypeZapret2
+	if !cfg.ProviderEnabled(config.ProviderTypeZapret2) && cfg.ProviderEnabled(config.ProviderTypeZapret) {
+		pt = config.ProviderTypeZapret
+	}
+	return withDefaults(&Config{
+		ProviderType: string(pt),
+		Options:      cfg.ProviderOptions(pt),
+	})
 }
 
 // Start starts zapret
 func (p *Provider) Start(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	
-	if p.started {
-		return nil
-	}
-	
-	// Create directories
-	os.MkdirAll(p.config.StateDir, 0755)
-	os.MkdirAll(filepath.Dir(p.config.ConfigPath), 0755)
-	
-	// Write strategy file
-	if err := p.writeStrategy(); err != nil {
-		return fmt.Errorf("write strategy: %w", err)
-	}
-	
-// Build command
-	args := p.buildArgs()
-	p.cmd = exec.CommandContext(ctx, p.config.BinaryPath, args...)
-	p.cmd.Stdout = nil
-	p.cmd.Stderr = nil
-	
-	setProcessGroup(p.cmd)
-	
-	if err := p.cmd.Start(); err != nil {
-		return fmt.Errorf("start %s: %w", p.config.ProviderType, err)
-	}
-	
-	p.started = true
-	p.startTime = time.Now()
-	p.log("info", "%s started (PID: %d)", p.config.ProviderType, p.cmd.Process.Pid)
-	
-	// Monitor process
-	p.wg.Add(1)
-	go p.monitor()
-	
-	return nil
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.proc.Start(p.config.BinaryPath, p.buildArgs())
 }
 
 // Stop stops zapret
 func (p *Provider) Stop() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	
-	if !p.started {
-		return nil
-	}
-	
-	p.cancel()
-	
-	if p.cmd != nil && p.cmd.Process != nil {
-		p.cmd.Process.Signal(syscall.SIGTERM)
-		p.cmd.Wait()
-	}
-	
-	p.started = false
-	p.log("info", "%s stopped", p.config.ProviderType)
-	
+	p.proc.Stop(stopTimeout)
 	return nil
 }
 
-// Reload reloads zapret configuration
+// Reload restarts nfqws with the new strategy (nfqws has no reload signal).
 func (p *Provider) Reload(cfg *Config) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
-	p.config = cfg
-	
-	if p.started {
-		// Write new strategy
-		if err := p.writeStrategy(); err != nil {
-			return fmt.Errorf("write strategy: %w", err)
-		}
-		
-		// Send SIGHUP for reload
-		if p.cmd != nil && p.cmd.Process != nil {
-			p.cmd.Process.Signal(syscall.SIGHUP)
-			p.restarts++
-			p.log("info", "%s reloaded", p.config.ProviderType)
-		}
+
+	p.config = withDefaults(cfg)
+	if !p.proc.Status().Running {
+		return nil
 	}
-	
+	if err := p.proc.Restart(p.config.BinaryPath, p.buildArgs(), stopTimeout); err != nil {
+		return err
+	}
+	p.log("info", "%s restarted with new strategy", p.config.ProviderType)
 	return nil
+}
+
+// QueueNum returns the NFQUEUE number nfqws listens on.
+func (p *Provider) QueueNum() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.config.QueueNum
 }
 
 // GetStatus returns provider status
 func (p *Provider) GetStatus() map[string]interface{} {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	
+	providerType, queue := p.config.ProviderType, p.config.QueueNum
+	p.mu.RUnlock()
+
+	st := p.proc.Status()
 	status := map[string]interface{}{
-		"running":      p.started,
-		"provider":     p.config.ProviderType,
-		"pid":          0,
-		"uptime":       "",
-		"restarts":     p.restarts,
-		"last_error":   p.lastError,
-		"active_conns": p.activeConns,
+		"running":    st.Running,
+		"provider":   providerType,
+		"queue":      queue,
+		"pid":        st.PID,
+		"uptime":     "",
+		"restarts":   st.Restarts,
+		"last_error": st.LastError,
 	}
-	
-	if p.started && p.cmd != nil && p.cmd.Process != nil {
-		status["pid"] = p.cmd.Process.Pid
-		status["uptime"] = time.Since(p.startTime).String()
+	if st.Running {
+		status["uptime"] = st.Uptime.Round(time.Second).String()
 	}
-	
 	return status
 }
 
@@ -244,111 +176,23 @@ func (p *Provider) GetStatusJSON() string {
 	return string(data)
 }
 
-// buildArgs builds command line arguments
+// buildArgs builds nfqws/nfqws2 command line arguments
 func (p *Provider) buildArgs() []string {
-	args := []string{
-		"--queue=" + fmt.Sprintf("%d", p.config.QueueNum),
-		"--mark=" + p.config.Mark,
-		"--desync-mark=" + p.config.DesyncMark,
-		"--desync-mark-postnat=" + p.config.DesyncMarkPost,
-		"--respawn-delay=" + fmt.Sprintf("%d", p.config.RespawnDelay),
+	args := []string{"--qnum=" + strconv.Itoa(p.config.QueueNum)}
+
+	strategy := p.config.Options
+	if strategy == "" {
+		if p.config.ProviderType == string(config.ProviderTypeZapret2) {
+			strategy = defaultZapret2Strategy
+		} else {
+			strategy = defaultZapretStrategy
+		}
 	}
-	
-	if p.config.ProviderType == "zapret2" {
-		args = append(args, "--lua-file="+p.config.StrategyFile)
-	} else {
-		args = append(args, "--strategy="+p.config.StrategyFile)
-	}
-	
-	// Add NFQWS options from config
-	if p.config.NFQWSOptions != "" {
-		// Parse and add custom options
-	}
-	
-	return args
-}
-
-// writeStrategy writes the desync strategy file
-func (p *Provider) writeStrategy() error {
-	if p.config.ProviderType == "zapret2" {
-		// Write Lua strategy for zapret2
-		strategy := `local desync = require("desync")
-
--- TCP 80 - HTTP
-desync.fake_tls({
-    filter = {tcp = 80, l7 = "http", payload = "http_req"},
-    blob = "fake_default_http",
-    tcp_md5 = true,
-})
-
-desync.multisplit({
-    filter = {tcp = 80, l7 = "http", payload = "http_req"},
-    pos = "method+2",
-})
-
--- TCP 443 - TLS
-desync.fake_tls({
-    filter = {tcp = 443, l7 = "tls", payload = "tls_client_hello"},
-    blob = "fake_default_tls",
-    tcp_md5 = true,
-    tcp_seq = -10000,
-})
-
-desync.multidisorder({
-    filter = {tcp = 443, l7 = "tls", payload = "tls_client_hello"},
-    pos = {1, "midsld"},
-})
-
--- UDP 443 - QUIC
-desync.fake_quic({
-    filter = {udp = 443, l7 = "quic", payload = "quic_initial"},
-    blob = "fake_default_quic",
-    repeats = 6,
-})
-`
-		return os.WriteFile(p.config.StrategyFile, []byte(strategy), 0644)
-	}
-	
-	// Write text strategy for zapret
-	strategy := `--filter-tcp=80 --dpi-desync=fake,fakedsplit --dpi-desync-autottl=2 --dpi-desync-fooling=badsum
---new
---filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-repeats=11 --dpi-desync-fooling=badsum --dpi-desync-fake-tls-mod=rnd,dupsid,sni=www.google.com
---new
---filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=11 --dpi-desync-fake-quic=/opt/zapret/files/fake/quic_initial_www_google_com.bin
---new
---filter-udp=443 <HOSTLIST_NOAUTO> --dpi-desync=fake --dpi-desync-repeats=11
---new
---filter-tcp=443 <HOSTLIST> --dpi-desync=multidisorder --dpi-desync-split-pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1
-`
-	return os.WriteFile(p.config.StrategyFile, []byte(strategy), 0644)
-}
-
-// monitor monitors the zapret process
-func (p *Provider) monitor() {
-	defer p.wg.Done()
-	
-	if p.cmd == nil {
-		return
-	}
-	
-	err := p.cmd.Wait()
-	
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	
-	p.started = false
-	if err != nil {
-		p.lastError = err.Error()
-		p.log("error", "%s exited: %v", p.config.ProviderType, err)
-	} else {
-		p.log("info", "%s exited cleanly", p.config.ProviderType)
-	}
+	return append(args, strings.Fields(strategy)...)
 }
 
 func (p *Provider) log(level, format string, args ...interface{}) {
 	if p.onLog != nil {
-		msg := fmt.Sprintf(format, args...)
-		p.onLog(level, "["+p.config.ProviderType+"] "+msg)
+		p.onLog(level, "["+p.config.ProviderType+"] "+fmt.Sprintf(format, args...))
 	}
 }
-

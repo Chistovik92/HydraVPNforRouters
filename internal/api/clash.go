@@ -1,45 +1,50 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
+	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/gorilla/websocket"
 )
 
 // ClashAPI provides Clash-compatible REST API
 type ClashAPI struct {
-	mu         sync.RWMutex
-	engine     *core.Engine
-	config     *config.Config
-	server     *http.Server
-	clients    map[*websocket.Conn]bool
-	upgrader   websocket.Upgrader
-	onLog      func(level, message string)
+	mu       sync.RWMutex
+	engine   *core.Engine
+	config   *config.Config
+	server   *http.Server
+	clients  map[*websocket.Conn]bool
+	upgrader websocket.Upgrader
+	secret   string
+	onLog    func(level, message string)
 }
 
 // Clash API structures
 type ClashConfig struct {
-	Port             int    `json:"port"`
-	SocksPort        int    `json:"socks-port"`
-	RedirPort        int    `json:"redir-port"`
-	MixedPort        int    `json:"mixed-port"`
-	AllowLan         bool   `json:"allow-lan"`
-	BindAddress      string `json:"bind-address"`
-	Mode             string `json:"mode"`
-	LogLevel         string `json:"log-level"`
-	ExternalController string `json:"external-controller"`
-	Secret           string `json:"secret,omitempty"`
-	ExternalUI       string `json:"external-ui,omitempty"`
-	ExternalUIURL    string `json:"external-ui-url,omitempty"`
-	Profile          *ProfileConfig `json:"profile,omitempty"`
-	DNS              *DNSConfig     `json:"dns,omitempty"`
-	TUN              *TUNConfig     `json:"tun,omitempty"`
+	Port               int            `json:"port"`
+	SocksPort          int            `json:"socks-port"`
+	RedirPort          int            `json:"redir-port"`
+	MixedPort          int            `json:"mixed-port"`
+	AllowLan           bool           `json:"allow-lan"`
+	BindAddress        string         `json:"bind-address"`
+	Mode               string         `json:"mode"`
+	LogLevel           string         `json:"log-level"`
+	ExternalController string         `json:"external-controller"`
+	Secret             string         `json:"secret,omitempty"`
+	ExternalUI         string         `json:"external-ui,omitempty"`
+	ExternalUIURL      string         `json:"external-ui-url,omitempty"`
+	Profile            *ProfileConfig `json:"profile,omitempty"`
+	DNS                *DNSConfig     `json:"dns,omitempty"`
+	TUN                *TUNConfig     `json:"tun,omitempty"`
 }
 
 type ProfileConfig struct {
@@ -61,48 +66,48 @@ type DNSConfig struct {
 }
 
 type TUNConfig struct {
-	Enable      bool   `json:"enable"`
-	Stack       string `json:"stack"`
-	DNSHijack   bool   `json:"dns-hijack"`
-	AutoRoute   bool   `json:"auto-route"`
-	AutoDetectInterface bool `json:"auto-detect-interface"`
+	Enable              bool   `json:"enable"`
+	Stack               string `json:"stack"`
+	DNSHijack           bool   `json:"dns-hijack"`
+	AutoRoute           bool   `json:"auto-route"`
+	AutoDetectInterface bool   `json:"auto-detect-interface"`
 }
 
 type Proxy struct {
-	Name     string                 `json:"name"`
-	Type     string                 `json:"type"`
-	Server   string                 `json:"server"`
-	Port     int                    `json:"port"`
-	UUID     string                 `json:"uuid,omitempty"`
-	Password string                 `json:"password,omitempty"`
-	Cipher   string                 `json:"cipher,omitempty"`
-	UDP      bool                   `json:"udp,omitempty"`
-	TLS      bool                   `json:"tls,omitempty"`
-	SkipCertVerify bool            `json:"skip-cert-verify,omitempty"`
-	ServerName string               `json:"servername,omitempty"`
-	Network  string                 `json:"network,omitempty"`
-	WSPath   string                 `json:"ws-path,omitempty"`
-	WSHeaders map[string]string     `json:"ws-headers,omitempty"`
-	Flow     string                 `json:"flow,omitempty"`
-	PublicKey string                `json:"public-key,omitempty"`
-	ShortID  string                 `json:"short-id,omitempty"`
-	Extra    map[string]interface{} `json:"-"`
+	Name           string                 `json:"name"`
+	Type           string                 `json:"type"`
+	Server         string                 `json:"server"`
+	Port           int                    `json:"port"`
+	UUID           string                 `json:"uuid,omitempty"`
+	Password       string                 `json:"password,omitempty"`
+	Cipher         string                 `json:"cipher,omitempty"`
+	UDP            bool                   `json:"udp,omitempty"`
+	TLS            bool                   `json:"tls,omitempty"`
+	SkipCertVerify bool                   `json:"skip-cert-verify,omitempty"`
+	ServerName     string                 `json:"servername,omitempty"`
+	Network        string                 `json:"network,omitempty"`
+	WSPath         string                 `json:"ws-path,omitempty"`
+	WSHeaders      map[string]string      `json:"ws-headers,omitempty"`
+	Flow           string                 `json:"flow,omitempty"`
+	PublicKey      string                 `json:"public-key,omitempty"`
+	ShortID        string                 `json:"short-id,omitempty"`
+	Extra          map[string]interface{} `json:"-"`
 }
 
 type ProxyGroup struct {
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Proxies  []string `json:"proxies"`
-	URL      string   `json:"url,omitempty"`
-	Interval int      `json:"interval,omitempty"`
-	Timeout  int      `json:"timeout,omitempty"`
-	DisableUDP bool   `json:"disable-udp,omitempty"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Proxies    []string `json:"proxies"`
+	URL        string   `json:"url,omitempty"`
+	Interval   int      `json:"interval,omitempty"`
+	Timeout    int      `json:"timeout,omitempty"`
+	DisableUDP bool     `json:"disable-udp,omitempty"`
 }
 
 type Rule struct {
-	Type     string `json:"type"`
-	Payload  string `json:"payload"`
-	Proxy    string `json:"proxy"`
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+	Proxy   string `json:"proxy"`
 }
 
 type ConnectionsResponse struct {
@@ -110,20 +115,20 @@ type ConnectionsResponse struct {
 }
 
 type Connection struct {
-	ID          string  `json:"id"`
-	Start       string  `json:"start"`
-	Source      string  `json:"source"`
-	Destination string  `json:"destination"`
-	Inbound     string  `json:"inbound"`
-	Network     string  `json:"network"`
-	Process     string  `json:"process"`
-	Upload      int64   `json:"upload"`
-	Download    int64   `json:"download"`
-	UploadSpeed float64 `json:"uploadSpeed"`
-	DownloadSpeed float64 `json:"downloadSpeed"`
-	Rule        string  `json:"rule"`
-	Proxy       string  `json:"proxy"`
-	Chains      []string `json:"chains"`
+	ID            string   `json:"id"`
+	Start         string   `json:"start"`
+	Source        string   `json:"source"`
+	Destination   string   `json:"destination"`
+	Inbound       string   `json:"inbound"`
+	Network       string   `json:"network"`
+	Process       string   `json:"process"`
+	Upload        int64    `json:"upload"`
+	Download      int64    `json:"download"`
+	UploadSpeed   float64  `json:"uploadSpeed"`
+	DownloadSpeed float64  `json:"downloadSpeed"`
+	Rule          string   `json:"rule"`
+	Proxy         string   `json:"proxy"`
+	Chains        []string `json:"chains"`
 }
 
 type TrafficsResponse struct {
@@ -132,24 +137,36 @@ type TrafficsResponse struct {
 }
 
 type MemoryResponse struct {
-	Alloc     int64 `json:"alloc"`
-	Total     int64 `json:"total"`
-	Sys       int64 `json:"sys"`
-	NumGC     int   `json:"numGC"`
+	Alloc int64 `json:"alloc"`
+	Total int64 `json:"total"`
+	Sys   int64 `json:"sys"`
+	NumGC int   `json:"numGC"`
 }
 
-// NewClashAPI creates a new Clash API server
-func NewClashAPI(engine *core.Engine, cfg *config.Config, onLog func(level, message string)) *ClashAPI {
+// NewClashAPI creates a new Clash API server. When secret is not empty,
+// every request must carry "Authorization: Bearer <secret>" (or ?token= for
+// WebSocket clients), as in the Clash API specification.
+func NewClashAPI(engine *core.Engine, cfg *config.Config, secret string, onLog func(level, message string)) *ClashAPI {
 	api := &ClashAPI{
-		engine: engine,
-		config: cfg,
+		engine:  engine,
+		config:  cfg,
 		clients: make(map[*websocket.Conn]bool),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
-		},
-		onLog: onLog,
+		secret:  secret,
+		onLog:   onLog,
 	}
-	
+	api.upgrader = websocket.Upgrader{
+		// Dashboards are served from other origins; with a secret the
+		// token check protects the endpoint, without one only same-host
+		// pages may connect.
+		CheckOrigin: func(r *http.Request) bool {
+			if api.secret != "" {
+				return true
+			}
+			origin := r.Header.Get("Origin")
+			return origin == "" || strings.HasSuffix(origin, "://"+r.Host)
+		},
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/configs", api.handleConfigs)
 	mux.HandleFunc("/proxies", api.handleProxies)
@@ -161,25 +178,46 @@ func NewClashAPI(engine *core.Engine, cfg *config.Config, onLog func(level, mess
 	mux.HandleFunc("/version", api.handleVersion)
 	mux.HandleFunc("/logs", api.handleLogs)
 	mux.HandleFunc("/connections/", api.handleConnection)
-	
+
 	api.server = &http.Server{
-		Handler: mux,
+		Handler:           api.authorize(mux),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
-	
+
 	return api
+}
+
+// authorize enforces the bearer secret.
+func (c *ClashAPI) authorize(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c.secret != "" {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if token == "" {
+				token = r.URL.Query().Get("token")
+			}
+			if subtle.ConstantTimeCompare([]byte(token), []byte(c.secret)) != 1 {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start starts the Clash API server
 func (c *ClashAPI) Start(addr string) error {
 	c.server.Addr = addr
 	c.log("info", "Starting Clash API on %s", addr)
-	return c.server.ListenAndServe()
+	if err := c.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // Stop stops the Clash API server
 func (c *ClashAPI) Stop() error {
 	c.log("info", "Stopping Clash API")
-	
+
 	// Close all WebSocket connections
 	c.mu.Lock()
 	for conn := range c.clients {
@@ -187,7 +225,7 @@ func (c *ClashAPI) Stop() error {
 	}
 	c.clients = make(map[*websocket.Conn]bool)
 	c.mu.Unlock()
-	
+
 	return c.server.Close()
 }
 
@@ -197,18 +235,18 @@ func (c *ClashAPI) handleConfigs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	cfg := c.engine.GetConfig()
-	
+
 	clashConfig := &ClashConfig{
-		Port:             7890,
-		SocksPort:        7891,
-		MixedPort:        7892,
-		AllowLan:         true,
-		BindAddress:      "0.0.0.0",
-		Mode:             "rule",
-		LogLevel:         cfg.Settings.LogLevel,
-		ExternalController: "0.0.0.0:9090",
+		Port:               7890,
+		SocksPort:          7891,
+		MixedPort:          7892,
+		AllowLan:           true,
+		BindAddress:        "0.0.0.0",
+		Mode:               "rule",
+		LogLevel:           cfg.Settings.LogLevel,
+		ExternalController: c.server.Addr,
 		Profile: &ProfileConfig{
 			StoreMode:     true,
 			StoreSelected: true,
@@ -225,7 +263,7 @@ func (c *ClashAPI) handleConfigs(w http.ResponseWriter, r *http.Request) {
 			Fallback:          cfg.Settings.BootstrapDNSServers,
 		},
 	}
-	
+
 	c.writeJSON(w, clashConfig)
 }
 
@@ -242,9 +280,6 @@ func (c *ClashAPI) handleProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *ClashAPI) listProxies(w http.ResponseWriter, r *http.Request) {
-	// Get outbounds from engine
-	status := c.engine.GetStatus()
-	
 	proxies := map[string]interface{}{
 		"proxies": []Proxy{
 			{Name: "DIRECT", Type: "direct"},
@@ -255,21 +290,6 @@ func (c *ClashAPI) listProxies(w http.ResponseWriter, r *http.Request) {
 			{Name: "GLOBAL", Type: "select", Proxies: []string{"PROXY", "DIRECT", "REJECT"}},
 		},
 	}
-	
-	// Add sing-box outbounds if available
-	if sb, ok := status["singbox"].(map[string]interface{}); ok {
-		if outbounds, ok := sb["outbounds"].([]interface{}); ok {
-			for _, ob := range outbounds {
-				if obMap, ok := ob.(map[string]interface{}); ok {
-					proxies["proxies"] = append(proxies["proxies"].([]Proxy), Proxy{
-						Name: obMap["tag"].(string),
-						Type: obMap["type"].(string),
-					})
-				}
-			}
-		}
-	}
-	
 	c.writeJSON(w, proxies)
 }
 
@@ -279,7 +299,7 @@ func (c *ClashAPI) addProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	
+
 	// Add proxy to engine
 	c.writeJSON(w, map[string]string{"message": "Proxy added"})
 }
@@ -287,7 +307,7 @@ func (c *ClashAPI) addProxy(w http.ResponseWriter, r *http.Request) {
 // handleProxy handles GET/PUT/PATCH/DELETE /proxies/{name}
 func (c *ClashAPI) handleProxy(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Path[len("/proxies/"):]
-	
+
 	switch r.Method {
 	case http.MethodGet:
 		c.getProxy(w, r, name)
@@ -310,7 +330,7 @@ func (c *ClashAPI) updateProxy(w http.ResponseWriter, r *http.Request, name stri
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	
+
 	// Update proxy in engine
 	c.writeJSON(w, map[string]string{"message": "Proxy updated"})
 }
@@ -326,13 +346,26 @@ func (c *ClashAPI) handleRules(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
-	rules := []Rule{
-		{Type: "DOMAIN-SUFFIX", Payload: "google.com", Proxy: "PROXY"},
-		{Type: "GEOIP", Payload: "CN", Proxy: "DIRECT"},
-		{Type: "FINAL", Payload: "", Proxy: "PROXY"},
+
+	// Rules come from the configuration instead of placeholder data.
+	rules := []Rule{}
+	for _, rule := range c.engine.GetConfig().Rules {
+		if !rule.Enabled {
+			continue
+		}
+		add := func(typ string, payloads []string) {
+			for _, p := range payloads {
+				rules = append(rules, Rule{Type: typ, Payload: p, Proxy: rule.Outbound})
+			}
+		}
+		add("DOMAIN", rule.Domain)
+		add("DOMAIN-SUFFIX", rule.DomainSuffix)
+		add("DOMAIN-KEYWORD", rule.DomainKeyword)
+		add("IP-CIDR", rule.Destination)
+		add("SRC-IP-CIDR", rule.Source)
 	}
-	
+	rules = append(rules, Rule{Type: "MATCH", Proxy: "DIRECT"})
+
 	c.writeJSON(w, map[string]interface{}{"rules": rules})
 }
 
@@ -342,10 +375,10 @@ func (c *ClashAPI) handleConnections(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Get connections from sing-box
 	connections := []Connection{}
-	
+
 	c.writeJSON(w, ConnectionsResponse{Connections: connections})
 }
 
@@ -355,7 +388,7 @@ func (c *ClashAPI) handleTraffics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	c.writeJSON(w, TrafficsResponse{Up: 0, Down: 0})
 }
 
@@ -365,8 +398,15 @@ func (c *ClashAPI) handleMemory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
-	c.writeJSON(w, MemoryResponse{Alloc: 0, Total: 0, Sys: 0, NumGC: 0})
+
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	c.writeJSON(w, MemoryResponse{
+		Alloc: int64(ms.Alloc),
+		Total: int64(ms.TotalAlloc),
+		Sys:   int64(ms.Sys),
+		NumGC: int(ms.NumGC),
+	})
 }
 
 // handleVersion handles GET /version
@@ -375,9 +415,9 @@ func (c *ClashAPI) handleVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	c.writeJSON(w, map[string]string{
-		"version": "1.0.0",
+		"version": version.Version,
 		"meta":    "HydraVPN for Router",
 	})
 }
@@ -388,18 +428,18 @@ func (c *ClashAPI) handleLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Upgrade to WebSocket for log streaming
 	conn, err := c.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		c.log("error", "WebSocket upgrade failed: %v", err)
 		return
 	}
-	
+
 	c.mu.Lock()
 	c.clients[conn] = true
 	c.mu.Unlock()
-	
+
 	// Send logs
 	go c.streamLogs(conn)
 }
@@ -410,12 +450,12 @@ func (c *ClashAPI) handleConnection(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
-// Close connection
+
+	// Close connection
 	c.writeJSON(w, map[string]string{"message": "Connection closed"})
 }
 
-// streamLogs streams logs to WebSocket client
+// streamLogs streams logs to a WebSocket client until it disconnects.
 func (c *ClashAPI) streamLogs(conn *websocket.Conn) {
 	defer func() {
 		c.mu.Lock()
@@ -423,19 +463,36 @@ func (c *ClashAPI) streamLogs(conn *websocket.Conn) {
 		c.mu.Unlock()
 		conn.Close()
 	}()
-	
+
+	// The read loop detects client disconnects (and handles control frames).
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
+		case <-closed:
+			return
 		case <-ticker.C:
-			// Send log entry
-			conn.WriteJSON(map[string]interface{}{
-				"type":    "log",
-				"payload": "Log entry",
+			state := string(c.engine.GetState())
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			err := conn.WriteJSON(map[string]interface{}{
+				"type":    "info",
+				"payload": "engine state: " + state,
 				"time":    time.Now().Format(time.RFC3339),
 			})
+			if err != nil {
+				return
+			}
 		}
 	}
 }
@@ -451,4 +508,3 @@ func (c *ClashAPI) log(level, format string, args ...interface{}) {
 		c.onLog(level, "[clash-api] "+msg)
 	}
 }
-

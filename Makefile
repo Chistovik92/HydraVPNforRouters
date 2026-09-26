@@ -1,51 +1,58 @@
 # HydraVPN for Router Makefile
 
-VERSION := 1.0.0
+# The version lives in pkg/version/version.go; override with make VERSION=x.y.z
+VERSION ?= $(shell sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' pkg/version/version.go)
+MODULE := github.com/Chistovik92/hydravpn-router
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-BUILT_BY := $(shell whoami)@$(shell hostname)
-GO_VERSION := $(shell go version | awk '{print $$3}')
+IMAGE ?= ghcr.io/chistovik92/hydravpn-router
 
 LDFLAGS := -s -w \
-    -X github.com/Chistovik92/hydravpn-router/pkg/version.Version=$(VERSION) \
-    -X github.com/Chistovik92/hydravpn-router/pkg/version.Commit=$(COMMIT) \
-    -X github.com/Chistovik92/hydravpn-router/pkg/version.Date=$(DATE) \
-    -X github.com/Chistovik92/hydravpn-router/pkg/version.BuiltBy=$(BUILT_BY) \
-    -X github.com/Chistovik92/hydravpn-router/pkg/version.GoVersion=$(GO_VERSION)
+    -X $(MODULE)/pkg/version.Version=$(VERSION) \
+    -X $(MODULE)/pkg/version.Commit=$(COMMIT) \
+    -X $(MODULE)/pkg/version.Date=$(DATE)
 
 BUILD_TAGS := netgo,osusergo
+
+# OpenWrt package architecture | GOARCH | GOARM
+OPENWRT_TARGETS := \
+    x86_64|amd64| \
+    aarch64_generic|arm64| \
+    aarch64_cortex-a53|arm64| \
+    arm_cortex-a7_neon-vfpv4|arm|7 \
+    arm_cortex-a9|arm|7 \
+    mipsel_24kc|mipsle| \
+    mips_24kc|mips|
 
 # Default target
 all: build
 
 # Build for current platform
 build:
-	go build -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o hydravpn-router ./cmd/hydravpn-router
+	go build -trimpath -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o hydravpn-router ./cmd/hydravpn-router
 
-# Build for all platforms
+# Build release binaries for all platforms
 build-all:
 	./scripts/build.sh $(VERSION) ./dist
 
-# Build OpenWRT packages
+# Build OpenWrt .ipk packages (needs Docker with BuildKit)
 build-openwrt:
-	docker build -f build/openwrt/Dockerfile --build-arg VERSION=$(VERSION) -t hydravpn-router-openwrt:$(VERSION) .
-	docker run --rm -v $(PWD)/dist/openwrt:/output hydravpn-router-openwrt:$(VERSION)
-
-# Build KeeneticOS package
-build-keenetic:
-	cd internal/platform/keenetic && go run . generate-knp $(VERSION) ../../../dist/keenetic
-
-# Build MikroTik package
-build-mikrotik:
-	cd internal/platform/mikrotik && go run . generate-npk $(VERSION) ../../../dist/mikrotik
+	@for t in $(OPENWRT_TARGETS); do \
+		pkg=$${t%%|*}; rest=$${t#*|}; goarch=$${rest%%|*}; goarm=$${rest#*|}; \
+		echo "==> $$pkg ($$goarch$$goarm)"; \
+		docker build -f build/openwrt/Dockerfile \
+			--build-arg VERSION=$(VERSION) \
+			--build-arg PKG_ARCH=$$pkg --build-arg GOARCH=$$goarch --build-arg GOARM=$$goarm \
+			--output type=local,dest=dist/openwrt . || exit 1; \
+	done
 
 # Run tests
 test:
-	go test -v -tags "$(BUILD_TAGS)" ./...
+	go test -tags "$(BUILD_TAGS)" ./...
 
 # Run tests with coverage
 test-cover:
-	go test -v -tags "$(BUILD_TAGS)" -coverprofile=coverage.out ./...
+	go test -tags "$(BUILD_TAGS)" -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
 # Lint
@@ -56,59 +63,54 @@ lint:
 fmt:
 	go fmt ./...
 
-# Vet
+# Vet (Linux is the main target, Windows only has stubs)
 vet:
-	go vet ./...
-
-# Generate mocks
-generate:
-	go generate ./...
+	GOOS=linux go vet ./...
+	GOOS=windows go vet ./...
 
 # Clean build artifacts
 clean:
 	rm -f hydravpn-router
 	rm -rf dist/
-	rm -rf coverage.out coverage.html
+	rm -f coverage.out coverage.html
 
 # Install locally
 install: build
-	sudo cp hydravpn-router /usr/local/bin/
+	sudo install -m 0755 hydravpn-router /usr/local/bin/hydravpn-router
 	sudo mkdir -p /etc/hydravpn-router
-	sudo cp configs/config.yaml /etc/hydravpn-router/config.yaml
+	[ -f /etc/hydravpn-router/config.yaml ] || sudo cp configs/config.yaml /etc/hydravpn-router/config.yaml
 
 # Development run
 dev: build
-	./hydravpn-router start -c configs/config.yaml
+	./hydravpn-router start -c configs/config.yaml --runtime-dir ./tmp
 
-# Docker build
+# Docker image (see Dockerfile)
 docker-build:
-	docker build -t hydravpn-router:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
 
 # Docker run
 docker-run:
 	docker run --rm -it --network host --cap-add=NET_ADMIN --cap-add=NET_RAW \
-	    -v $(PWD)/configs:/etc/hydravpn-router \
-	    hydravpn-router:$(VERSION) start -c /etc/hydravpn-router/config.yaml
+	    -v $(CURDIR)/configs:/etc/hydravpn-router \
+	    $(IMAGE):$(VERSION)
 
-# Release
+# Release: binaries for the GitHub release
 release: clean build-all
-	@echo "Release $(VERSION) built in dist/"
+	@echo "Release $(VERSION) built in dist/ - upload it to the GitHub release v$(VERSION)"
 
 # Help
 help:
-	@echo "HydraVPN for Router Makefile"
+	@echo "HydraVPN for Router Makefile (version $(VERSION))"
 	@echo ""
 	@echo "Targets:"
 	@echo "  build         - Build for current platform"
-	@echo "  build-all     - Build for all platforms"
-	@echo "  build-openwrt - Build OpenWRT IPK/APK packages"
-	@echo "  build-keenetic - Build KeeneticOS KNP package"
-	@echo "  build-mikrotik - Build MikroTik NPK package"
+	@echo "  build-all     - Build release binaries for all platforms"
+	@echo "  build-openwrt - Build OpenWrt .ipk packages (Docker)"
 	@echo "  test          - Run tests"
 	@echo "  test-cover    - Run tests with coverage"
 	@echo "  lint          - Run linter"
 	@echo "  fmt           - Format code"
-	@echo "  vet           - Run go vet"
+	@echo "  vet           - Run go vet for Linux and Windows"
 	@echo "  clean         - Clean build artifacts"
 	@echo "  install       - Install locally"
 	@echo "  dev           - Build and run development"
@@ -117,7 +119,4 @@ help:
 	@echo "  release       - Build release artifacts"
 	@echo "  help          - Show this help"
 
-.PHONY: all build build-all build-openwrt build-keenetic build-mikrotik test test-cover lint fmt vet generate clean install dev docker-build docker-run release help
-
-
-
+.PHONY: all build build-all build-openwrt test test-cover lint fmt vet clean install dev docker-build docker-run release help

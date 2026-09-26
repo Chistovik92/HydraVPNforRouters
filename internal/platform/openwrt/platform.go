@@ -11,6 +11,7 @@ import (
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
+	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
 
 // Platform implements the OpenWRT platform integration
@@ -34,40 +35,40 @@ func NewPlatform(cfg *config.Config) *Platform {
 func (p *Platform) Initialize(ctx context.Context) error {
 	// Create directory structure
 	dirs := []string{
-		"/etc/podkop-plus",
-		"/etc/podkop-plus/sing-box",
-		"/etc/podkop-plus/zapret",
-		"/etc/podkop-plus/byedpi",
-		"/var/run/podkop-plus",
-		"/var/run/podkop-plus/sing-box",
-		"/var/run/podkop-plus/zapret",
-		"/var/run/podkop-plus/byedpi",
-		"/tmp/podkop-plus",
-		"/www/luci-static/resources/view/podkop-plus",
+		"/etc/hydravpn-router",
+		"/etc/hydravpn-router/sing-box",
+		"/etc/hydravpn-router/zapret",
+		"/etc/hydravpn-router/byedpi",
+		"/var/run/hydravpn-router",
+		"/var/run/hydravpn-router/sing-box",
+		"/var/run/hydravpn-router/zapret",
+		"/var/run/hydravpn-router/byedpi",
+		"/tmp/hydravpn-router",
+		"/www/luci-static/resources/view/hydravpn-router",
 	}
-	
+
 	for _, dir := range dirs {
 		os.MkdirAll(dir, 0755)
 	}
-	
+
 	// Write default config if not exists
-	configPath := "/etc/podkop-plus/config.yaml"
+	configPath := "/etc/hydravpn-router/config.yaml"
 	if !fileExists(configPath) {
 		if err := p.config.SaveToFile(configPath); err != nil {
 			return fmt.Errorf("write default config: %w", err)
 		}
 	}
-	
+
 	// Create init script
 	if err := p.createInitScript(); err != nil {
 		return fmt.Errorf("create init script: %w", err)
 	}
-	
+
 	// Create UCI config
 	if err := p.createUCIConfig(); err != nil {
 		return fmt.Errorf("create UCI config: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -86,7 +87,7 @@ func (p *Platform) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	
+
 	p.engine = engine
 	return engine.Start()
 }
@@ -110,51 +111,46 @@ func (p *Platform) Reload(cfg *config.Config) error {
 
 // createInitScript creates the procd init script
 func (p *Platform) createInitScript() error {
-	initScript := `#!/bin/sh /etc/rc.common
+	return os.WriteFile("/etc/init.d/hydravpn-router", []byte(InitScript), 0755)
+}
+
+// InitScript is the procd init script. procd sends SIGTERM on stop and
+// "reload" sends SIGHUP, which the daemon handles by re-reading its config.
+const InitScript = `#!/bin/sh /etc/rc.common
 
 START=99
+STOP=10
 USE_PROCD=1
-EXTRA_COMMANDS="reload status"
-EXTRA_HELP="        reload  Reload configuration\n        status  Show service status"
 
-NAME=podkop-plus
-PROG=/usr/bin/podkop-plus
-CONFIG_FILE=/etc/podkop-plus/config.yaml
-LOG_FILE=/var/log/podkop-plus.log
+PROG=/usr/bin/hydravpn-router
+CONFIG_FILE=/etc/hydravpn-router/config.yaml
 
 start_service() {
     procd_open_instance
     procd_set_param command $PROG start -c $CONFIG_FILE
-    procd_set_param respawn 3600 5 0
+    procd_set_param respawn 3600 5 5
+    procd_set_param term_timeout 20
     procd_set_param stdout 1
     procd_set_param stderr 1
-    procd_set_param user root
+    procd_set_param file $CONFIG_FILE
     procd_close_instance
-}
-
-stop_service() {
-    $PROG stop
 }
 
 reload_service() {
     $PROG reload -c $CONFIG_FILE
 }
-
-status_service() {
-    $PROG status
-}
 `
-	return os.WriteFile("/etc/init.d/podkop-plus", []byte(initScript), 0755)
-}
 
-// createUCIConfig creates the UCI configuration file
+// createUCIConfig creates the UCI configuration file. An existing file is
+// left untouched so user settings survive re-initialisation.
 func (p *Platform) createUCIConfig() error {
-	uciConfig := `config podkop-plus 'main'
+	if fileExists("/etc/config/hydravpn-router") {
+		return nil
+	}
+	uciConfig := `config hydravpn-router 'main'
 	option enabled '1'
-	option config_version '1.0.0'
-	option config_file '/etc/podkop-plus/config.yaml'
+	option config_file '/etc/hydravpn-router/config.yaml'
 	option log_level 'warn'
-	option log_file '/var/log/podkop-plus.log'
 
 config section 'subscription'
 	option label 'Subscription'
@@ -173,34 +169,31 @@ config settings 'firewall'
 	option enabled '1'
 	list source_interface 'br-lan'
 	option mark_value '0x08000000'
-	option table_name 'podkop'
-	option chain_name 'podkop-chain'
+	option table_name 'hydravpn'
+	option chain_name 'proxy_pre'
 
 config settings 'singbox'
 	option enabled '1'
 	option binary '/usr/bin/sing-box'
-	option config_dir '/etc/podkop-plus/sing-box'
-	option runtime_dir '/var/run/podkop-plus/sing-box'
+	option config_dir '/etc/hydravpn-router/sing-box'
 
 config settings 'zapret'
 	option enabled '0'
 	option type 'zapret2'
 	option binary '/opt/zapret2/nfq2/nfqws2'
-	option strategy_file '/etc/podkop-plus/zapret/strategy.json'
 	option queue_num '4000'
-	option mark '0x01000000'
 
 config settings 'byedpi'
 	option enabled '0'
 	option binary '/usr/bin/ciadpi'
 	option listen_address '127.0.0.1'
-	option port_base '1080'
-	option options '-o 2 --auto=t,r,a,s -d 2'
+	option port '1080'
+	option options '-o 2 -d 2'
 
 config settings 'subscription'
 	option enabled '1'
 	option update_interval '1h'
-	option cache_dir '/etc/podkop-plus/subscription-cache'
+	option cache_dir '/etc/hydravpn-router/subscription-cache'
 
 config settings 'ui'
 	option enabled '1'
@@ -208,14 +201,14 @@ config settings 'ui'
 	option port '8080'
 	option bind_address '0.0.0.0'
 `
-	return os.WriteFile("/etc/config/podkop-plus", []byte(uciConfig), 0644)
+	return os.WriteFile("/etc/config/hydravpn-router", []byte(uciConfig), 0644)
 }
 
 // updateUCIState updates UCI with engine state
 func (p *Platform) updateUCIState(state core.EngineState) {
 	stateStr := string(state)
-	exec.Command("uci", "set", "podkop-plus.main.state="+stateStr).Run()
-	exec.Command("uci", "commit", "podkop-plus").Run()
+	exec.Command("uci", "set", "hydravpn-router.main.state="+stateStr).Run()
+	exec.Command("uci", "commit", "hydravpn-router").Run()
 }
 
 // logToSyslog logs to syslog
@@ -229,60 +222,64 @@ func (p *Platform) logToSyslog(level, msg string) {
 	case "debug":
 		priority = "debug"
 	}
-	exec.Command("logger", "-t", "podkop-plus", "-p", "daemon."+priority, msg).Run()
+	exec.Command("logger", "-t", "hydravpn-router", "-p", "daemon."+priority, msg).Run()
 }
 
-// GenerateIPK generates OpenWRT IPK package
-func (p *Platform) GenerateIPK(version, outputDir string) error {
-	// Create package structure
+// GenerateIPK generates an OpenWRT IPK package containing only this
+// program's files: the binary at binaryPath, the init script and the
+// default configuration. arch is the OpenWrt package architecture
+// (e.g. mipsel_24kc) matching the binary.
+func (p *Platform) GenerateIPK(pkgVersion, arch, binaryPath, outputDir string) error {
 	pkgDir := filepath.Join(outputDir, "pkg")
-	os.MkdirAll(filepath.Join(pkgDir, "CONTROL"), 0755)
-	
-	// Copy files
-	copyDir("/etc/podkop-plus", filepath.Join(pkgDir, "etc/podkop-plus"))
-	copyDir("/etc/init.d", filepath.Join(pkgDir, "etc/init.d"))
-	copyDir("/etc/config", filepath.Join(pkgDir, "etc/config"))
-	copyDir("/usr/bin", filepath.Join(pkgDir, "usr/bin"))
-	copyDir("/usr/lib/podkop-plus", filepath.Join(pkgDir, "usr/lib/podkop-plus"))
-	copyDir("/www/luci-static/resources/view/podkop-plus", filepath.Join(pkgDir, "www/luci-static/resources/view/podkop-plus"))
-	
+	for _, dir := range []string{"CONTROL", "usr/bin", "etc/init.d", "etc/hydravpn-router"} {
+		if err := os.MkdirAll(filepath.Join(pkgDir, dir), 0755); err != nil {
+			return err
+		}
+	}
+
+	if err := copyFile(binaryPath, filepath.Join(pkgDir, "usr/bin/hydravpn-router"), 0755); err != nil {
+		return fmt.Errorf("copy binary: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "etc/init.d/hydravpn-router"), []byte(InitScript), 0755); err != nil {
+		return err
+	}
+	if err := config.DefaultConfig().SaveToFile(filepath.Join(pkgDir, "etc/hydravpn-router/config.yaml")); err != nil {
+		return err
+	}
+
 	// Write control file
-	control := fmt.Sprintf(`Package: podkop-plus
+	control := fmt.Sprintf(`Package: hydravpn-router
 Version: %s
-Depends: libc, ca-bundle, kmod-inet-diag, kmod-netlink-diag, kmod-tun, curl, ucode, ucode-mod-fs, ucode-mod-uci, kmod-nft-tproxy, coreutils-base64, bind-dig, nftables, kmod-nft-nat, ip-full, sing-box
+Depends: libc, ca-bundle, kmod-nft-tproxy, kmod-nft-queue, nftables, ip-full, sing-box
 Conflicts: https-dns-proxy, nextdns, luci-app-passwall, luci-app-passwall2
 License: GPL-3.0-or-later
 Section: net
 URL: https://github.com/Chistovik92/hydravpn-router
 Maintainer: Chistovik92 <chistovik92@users.noreply.github.com>
-Architecture: all
-Installed-Size: 5000
+Architecture: %s
 Description: HydraVPN for Router - Multi-platform DPI bypass solution with sing-box, zapret, and ByeDPI support
-`, version)
-	
-	os.WriteFile(filepath.Join(pkgDir, "CONTROL/control"), []byte(control), 0644)
-	
-	// Write conffiles
-	conffiles := `/etc/config/podkop-plus
-/etc/podkop-plus/config.yaml
-`
-	os.WriteFile(filepath.Join(pkgDir, "CONTROL/conffiles"), []byte(conffiles), 0644)
-	
+`, pkgVersion, arch)
+
+	if err := os.WriteFile(filepath.Join(pkgDir, "CONTROL/control"), []byte(control), 0644); err != nil {
+		return err
+	}
+	os.WriteFile(filepath.Join(pkgDir, "CONTROL/conffiles"), []byte("/etc/hydravpn-router/config.yaml\n"), 0644)
+
 	// Write postinst
 	postinst := `#!/bin/sh
 [ -n "${IPKG_INSTROOT}" ] && exit 0
-/etc/init.d/podkop-plus enable
-/etc/init.d/podkop-plus start
+/etc/init.d/hydravpn-router enable
+/etc/init.d/hydravpn-router start
 `
 	os.WriteFile(filepath.Join(pkgDir, "CONTROL/postinst"), []byte(postinst), 0755)
-	
+
 	// Write prerm
 	prerm := `#!/bin/sh
-/etc/init.d/podkop-plus stop
-/etc/init.d/podkop-plus disable
+/etc/init.d/hydravpn-router stop
+/etc/init.d/hydravpn-router disable
 `
 	os.WriteFile(filepath.Join(pkgDir, "CONTROL/prerm"), []byte(prerm), 0755)
-	
+
 	// Build IPK
 	cmd := exec.Command("ipkg-build", "-o", "root", "-g", "root", pkgDir, outputDir)
 	cmd.Dir = outputDir
@@ -298,9 +295,9 @@ func (p *Platform) GenerateAPK(version, outputDir string) error {
 // InstallLUCI installs the LuCI web interface
 func (p *Platform) InstallLUCI() error {
 	// Copy LuCI files
-	luciDir := "/www/luci-static/resources/view/podkop-plus"
+	luciDir := "/www/luci-static/resources/view/hydravpn-router"
 	os.MkdirAll(luciDir, 0755)
-	
+
 	// Generate main.js from Vue/TypeScript source
 	// This would be built from the web/luci directory
 	return nil
@@ -313,27 +310,27 @@ func (p *Platform) GetSystemInfo() map[string]interface{} {
 		"ucode_runtime": p.ucodeRuntime,
 		"luci_enabled":  p.luciEnabled,
 	}
-	
+
 	// Get OpenWRT version
 	if out, err := exec.Command("cat", "/etc/openwrt_release").Output(); err == nil {
 		info["openwrt_release"] = string(out)
 	}
-	
+
 	// Get kernel version
 	if out, err := exec.Command("uname", "-r").Output(); err == nil {
 		info["kernel"] = strings.TrimSpace(string(out))
 	}
-	
+
 	// Get architecture
 	if out, err := exec.Command("uname", "-m").Output(); err == nil {
 		info["arch"] = strings.TrimSpace(string(out))
 	}
-	
+
 	// Get memory info
 	if out, err := exec.Command("cat", "/proc/meminfo").Output(); err == nil {
 		info["meminfo"] = string(out)
 	}
-	
+
 	return info
 }
 
@@ -342,25 +339,12 @@ func fileExists(path string) bool {
 	return !os.IsNotExist(err)
 }
 
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		
-		relPath, _ := filepath.Rel(src, path)
-		dstPath := filepath.Join(dst, relPath)
-		
-		if info.IsDir() {
-			return os.MkdirAll(dstPath, info.Mode())
-		}
-		
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(dstPath, data, info.Mode())
-	})
+func copyFile(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, mode)
 }
 
 // UCIConfig represents UCI configuration structure
@@ -371,35 +355,36 @@ type UCIConfig struct {
 }
 
 type UCISection struct {
-	Type    string            `json:"type"`
-	Options map[string]string `json:"options"`
+	Type    string              `json:"type"`
+	Options map[string]string   `json:"options"`
 	Lists   map[string][]string `json:"lists"`
 }
 
-// ToUCI converts Podkop config to UCI format
+// ToUCI converts HydraVPN config to UCI format
 func (p *Platform) ToUCI(cfg *config.Config) *UCIConfig {
 	uci := &UCIConfig{
 		Main: UCISection{
-			Type: "podkop-plus",
+			Type: "hydravpn-router",
 			Options: map[string]string{
-				"enabled":       "1",
+				"enabled":        "1",
 				"config_version": cfg.Settings.ConfigVersion,
-				"config_file":   cfg.Settings.ConfigPath,
-				"log_level":     cfg.Settings.LogLevel,
+				"version":        version.Version,
+				"config_file":    cfg.Settings.ConfigPath,
+				"log_level":      cfg.Settings.LogLevel,
 			},
 		},
 		Sections: make(map[string]UCISection),
 		Settings: make(map[string]UCISection),
 	}
-	
+
 	// Add sections
 	for _, section := range cfg.Sections {
 		uci.Sections[section.Name] = UCISection{
 			Type: "section",
 			Options: map[string]string{
-				"label":    section.Label,
-				"enabled":  boolToStr(section.Enabled),
-				"action":   string(section.Action),
+				"label":   section.Label,
+				"enabled": boolToStr(section.Enabled),
+				"action":  string(section.Action),
 			},
 			Lists: map[string][]string{
 				"selector_proxy_links": section.SelectorProxyLinks,
@@ -408,7 +393,7 @@ func (p *Platform) ToUCI(cfg *config.Config) *UCIConfig {
 			},
 		}
 	}
-	
+
 	// Add settings
 	uci.Settings["dns"] = UCISection{
 		Type: "settings",
@@ -421,24 +406,24 @@ func (p *Platform) ToUCI(cfg *config.Config) *UCIConfig {
 			"dns_rewrite_ttl":             fmt.Sprintf("%d", cfg.Settings.DNSRewriteTTL),
 		},
 		Lists: map[string][]string{
-			"dns_server":          cfg.Settings.DNSServers,
+			"dns_server":           cfg.Settings.DNSServers,
 			"bootstrap_dns_server": cfg.Settings.BootstrapDNSServers,
 		},
 	}
-	
+
 	uci.Settings["firewall"] = UCISection{
 		Type: "settings",
 		Options: map[string]string{
-			"enabled":      "1",
-			"mark_value":   "0x08000000",
-			"table_name":   "podkop",
-			"chain_name":   "podkop-chain",
+			"enabled":    "1",
+			"mark_value": "0x08000000",
+			"table_name": "hydravpn",
+			"chain_name": "proxy_pre",
 		},
 		Lists: map[string][]string{
 			"source_interface": cfg.Settings.SourceNetworkInterfaces,
 		},
 	}
-	
+
 	return uci
 }
 
@@ -449,10 +434,10 @@ func boolToStr(b bool) string {
 	return "0"
 }
 
-// FromUCI converts UCI config to Podkop config
+// FromUCI converts UCI config to HydraVPN config
 func (p *Platform) FromUCI(uci *UCIConfig) *config.Config {
 	cfg := config.DefaultConfig()
-	
+
 	if v, ok := uci.Main.Options["config_version"]; ok {
 		cfg.Settings.ConfigVersion = v
 	}
@@ -462,7 +447,7 @@ func (p *Platform) FromUCI(uci *UCIConfig) *config.Config {
 	if v, ok := uci.Main.Options["log_level"]; ok {
 		cfg.Settings.LogLevel = v
 	}
-	
+
 	if dns, ok := uci.Settings["dns"]; ok {
 		if v, ok := dns.Options["dns_type"]; ok {
 			cfg.Settings.DNSType = v
@@ -473,11 +458,11 @@ func (p *Platform) FromUCI(uci *UCIConfig) *config.Config {
 		cfg.Settings.DNSServers = dns.Lists["dns_server"]
 		cfg.Settings.BootstrapDNSServers = dns.Lists["bootstrap_dns_server"]
 	}
-	
+
 	if fw, ok := uci.Settings["firewall"]; ok {
 		cfg.Settings.SourceNetworkInterfaces = fw.Lists["source_interface"]
 	}
-	
+
 	return cfg
 }
 
@@ -486,4 +471,3 @@ func (u *UCIConfig) MarshalJSON() ([]byte, error) {
 	type Alias UCIConfig
 	return json.Marshal((*Alias)(u))
 }
-
