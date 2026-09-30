@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Radar bot account.** The router can sign in to a person's account in the Radar bot (bot API for apps, bot 5.9.1) with a one-time code and add the subscriptions issued there: `hydravpn-router radar link|sync|status|unlink` and `GET/POST/DELETE /api/v1/radar…` (see docs/API.md). The device token lives in `radar.json` next to the config file (0600, survives reboots); https only (http for private networks), redirects are not followed; a linked router syncs a minute after start and then every 12 h; read-only — access is issued and revoked in the bot. Not verified against a live bot: the tests use an emulator of its API.
+
 ## 1.2.2
 
 - Debug pre-releases (`vX.Y.Z-debug.N`): `install.sh` compares versions with the suffix (a pre-release is older than its release, `--version 1.2.2-debug.1` works); such builds force `log_level`/`app_log_level` to `debug` and serve pprof on `127.0.0.1:6060`. `hydravpn-router version` prints `X.Y.Z (commit)`.
