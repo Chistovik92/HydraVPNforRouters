@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -344,11 +345,14 @@ func (c *ConfigCmd) Run() error {
 		fmt.Println(string(data))
 		return nil
 	}
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("# HydraVPN for Router configuration (%s)\n%s", c.ConfigFile, data)
+	enc.Close()
+	fmt.Printf("# HydraVPN for Router configuration (%s)\n%s", c.ConfigFile, buf.String())
 	return nil
 }
 
@@ -538,8 +542,6 @@ func defaultConfigFile() string {
 
 func defaultRuntimeDir() string {
 	switch {
-	case runtime.GOOS == "windows":
-		return filepath.Join(os.TempDir(), "hydravpn-router")
 	case isEntware():
 		return entwareRuntimeDir
 	}

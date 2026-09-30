@@ -40,7 +40,7 @@ Changes that need the service to restart parts of itself (reload, subscription o
 | POST | `/api/v1/nodes/test` | `{"node":"Node 1"}` → `{"delay_ms":123}` |
 | GET | `/api/v1/check/{name}` | diagnostics: `global`, `dns`, `singbox`, `nft`, `proxy`, … |
 
-Changes are written to the config file atomically; the previous file is kept as `config.yaml.bak`. Comments of a hand-written file are lost on the first change made through the API.
+Changes are written to the config file atomically, and only the changed list item is edited: comments, key order and two-space indentation of a hand-written file stay. Blank lines between blocks are dropped by the YAML library and a commented-out example below a list may move behind the new items. The previous file is kept as `config.yaml.bak`; a change that makes the config invalid is refused and nothing is written.
 
 ## Example
 

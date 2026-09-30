@@ -324,3 +324,38 @@ func TestSlowReloadDoesNotHangTheRequest(t *testing.T) {
 		t.Errorf("status while applying: %d", code)
 	}
 }
+
+func TestAPIChangesKeepCommentsAndIndentation(t *testing.T) {
+	ts, _, cfgFile, token := setup(t)
+	hand := "# my notes\nsettings:\n  log_level: \"warn\" # keep me\n\nsections:\n  # the main section\n  - name: \"main\"\n    enabled: true\n\nsubscription_urls: []\n"
+	if err := os.WriteFile(cfgFile, []byte(hand), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, b := call(t, ts, token, "POST", "/api/v1/subscriptions", map[string]string{"section": "main", "url": "https://x.example/sub/1"}); code != 201 {
+		t.Fatalf("add: %d %s", code, b)
+	}
+	if code, _ := call(t, ts, token, "PUT", "/api/v1/sections/main", map[string]interface{}{"enabled": true, "action": "connection"}); code != 200 {
+		t.Fatal("replace failed")
+	}
+	out, _ := os.ReadFile(cfgFile)
+	text := string(out)
+	for _, keep := range []string{"# my notes", "# keep me", "# the main section"} {
+		if !strings.Contains(text, keep) {
+			t.Errorf("comment %q lost:\n%s", keep, text)
+		}
+	}
+	if strings.Contains(text, "\n    name:") && !strings.Contains(text, "\n  - name") {
+		t.Errorf("indentation changed:\n%s", text)
+	}
+	saved, err := config.LoadFromFile(cfgFile)
+	if err != nil || len(saved.SubscriptionURLs) != 1 || saved.Sections[0].Action != "connection" {
+		t.Fatalf("content: %+v %v", saved, err)
+	}
+	if code, _ := call(t, ts, token, "DELETE", "/api/v1/subscriptions/0", nil); code != 200 {
+		t.Error("delete failed")
+	}
+	if out, _ := os.ReadFile(cfgFile); !strings.Contains(string(out), "subscription_urls: []") || !strings.Contains(string(out), "# my notes") {
+		t.Errorf("after delete:\n%s", out)
+	}
+}

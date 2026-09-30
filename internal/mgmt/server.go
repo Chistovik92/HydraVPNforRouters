@@ -376,22 +376,30 @@ func readJSON(r *http.Request, v interface{}) error {
 	return dec.Decode(v)
 }
 
-// mutate applies fn to the config file and reloads the service. The file is
-// re-read so manual edits made since start are not lost.
+// mutate lets fn change the configuration, then writes just that change to
+// the config file and reloads the service. The file is re-read first so
+// manual edits made since start are not lost, and it is edited as a YAML tree
+// so its comments and layout survive (see config.ApplyEdits).
 func (s *Server) mutate(fn func(*config.Config) error) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
-	cfg, err := config.LoadFromFile(s.opts.ConfigFile)
+	before, err := config.LoadFromFile(s.opts.ConfigFile)
 	if err != nil {
 		return err
 	}
-	if err := fn(cfg); err != nil {
+	after, err := config.LoadFromFile(s.opts.ConfigFile)
+	if err != nil {
 		return err
 	}
-	if err := cfg.Validate(); err != nil {
+	if err := fn(after); err != nil {
 		return err
 	}
-	if err := cfg.SaveToFile(s.opts.ConfigFile); err != nil {
+	edits := diffConfig(before, after)
+	if len(edits) == 0 {
+		return nil
+	}
+	cfg, err := config.ApplyEdits(s.opts.ConfigFile, edits)
+	if err != nil {
 		return err
 	}
 	return s.apply(cfg)

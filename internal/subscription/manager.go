@@ -155,7 +155,7 @@ func cacheDirFor(cfg *config.Config) string {
 	if cfg != nil && cfg.Settings.ConfigPath != "" {
 		return filepath.Join(filepath.Dir(cfg.Settings.ConfigPath), "subscription-cache")
 	}
-	return config.DefaultConfigDir + "/subscription-cache"
+	return filepath.Join(config.DefaultConfigDir, "subscription-cache")
 }
 
 func (m *Manager) notifyUpdate() {

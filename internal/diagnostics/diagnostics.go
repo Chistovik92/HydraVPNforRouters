@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -376,7 +377,7 @@ func (d *Diagnostics) checkSingBox(ctx context.Context) (*CheckResult, error) {
 func (d *Diagnostics) checkInboundsConfig(ctx context.Context) (*CheckResult, error) {
 	configPath := d.config.Settings.ConfigPath
 	if configPath == "" {
-		configPath = config.DefaultConfigDir + "/sing-box/config.json"
+		configPath = filepath.Join(config.DefaultConfigDir, "sing-box", "config.json")
 	}
 	details := map[string]interface{}{"path": configPath}
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
 	"os"
@@ -21,12 +22,14 @@ const (
 	ProviderTypeAuto    ProviderType = "auto"
 )
 
-// Well-known paths and ports shared by all components.
+// Directories depend on the platform (see paths_*.go).
+var (
+	DefaultConfigDir, DefaultRuntimeDir, DefaultCacheDir = platformDirs()
+	DefaultConfigFile                                    = filepath.Join(DefaultConfigDir, "config.yaml")
+)
+
+// Well-known ports shared by all components.
 const (
-	DefaultConfigDir  = "/etc/hydravpn-router"
-	DefaultConfigFile = DefaultConfigDir + "/config.yaml"
-	DefaultRuntimeDir = "/var/run/hydravpn-router"
-	DefaultCacheDir   = "/tmp/hydravpn-router"
 
 	// TProxyPort is the port of the sing-box tproxy inbound used by the firewall.
 	TProxyPort = 1602
@@ -327,8 +330,8 @@ func DefaultConfig() *Config {
 			DownloadListsViaProxy:           false,
 			DownloadComponentsViaProxy:      false,
 			DontTouchDHCP:                   false,
-			ConfigPath:                      DefaultConfigDir + "/sing-box/config.json",
-			CachePath:                       DefaultCacheDir + "/cache.db",
+			ConfigPath:                      filepath.Join(DefaultConfigDir, "sing-box", "config.json"),
+			CachePath:                       filepath.Join(DefaultCacheDir, "cache.db"),
 			LogLevel:                        "warn",
 			AppLogLevel:                     "info",
 			SingBoxBinary:                   "sing-box",
@@ -355,10 +358,14 @@ func LoadFromFile(path string) (*Config, error) {
 		}
 		return nil, err
 	}
+	return parseConfig(data, path)
+}
 
+// parseConfig parses, completes with defaults and validates a configuration.
+func parseConfig(data []byte, name string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
 
 	// Apply defaults for missing values
@@ -399,10 +406,10 @@ func LoadFromFile(path string) (*Config, error) {
 		cfg.Settings.LatencyTestURL = "https://www.gstatic.com/generate_204"
 	}
 	if cfg.Settings.ConfigPath == "" {
-		cfg.Settings.ConfigPath = DefaultConfigDir + "/sing-box/config.json"
+		cfg.Settings.ConfigPath = filepath.Join(DefaultConfigDir, "sing-box", "config.json")
 	}
 	if cfg.Settings.CachePath == "" {
-		cfg.Settings.CachePath = DefaultCacheDir + "/cache.db"
+		cfg.Settings.CachePath = filepath.Join(DefaultCacheDir, "cache.db")
 	}
 	if cfg.Settings.LogLevel == "" {
 		cfg.Settings.LogLevel = "warn"
@@ -506,10 +513,14 @@ func (c *Config) ProviderOptions(p ProviderType) string {
 // SaveToFile saves configuration to a YAML file atomically and keeps the
 // previous version as path+".bak". Comments of a hand-written file are lost.
 func (c *Config) SaveToFile(path string) error {
-	data, err := yaml.Marshal(c)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(c); err != nil {
 		return err
 	}
+	enc.Close()
+	data := buf.Bytes()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}

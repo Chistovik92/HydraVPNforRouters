@@ -345,3 +345,21 @@ func TestManyIdenticalNamesGetUniqueTags(t *testing.T) {
 		t.Errorf("got %q", tag)
 	}
 }
+
+func TestCacheDirectoryIsCreated(t *testing.T) {
+	old := checkConfig
+	defer func() { checkConfig = old }()
+	checkConfig = func(string, string) error { return nil }
+
+	cfg := config.DefaultConfig()
+	dir := t.TempDir()
+	cfg.Settings.ConfigPath = filepath.Join(dir, "sing-box", "config.json")
+	cfg.Settings.CachePath = filepath.Join(dir, "missing", "run", "cache.db")
+	p := NewProvider(Options{Config: ConfigFromSettings(cfg, nil)})
+	if err := p.writeConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "missing", "run")); err != nil {
+		t.Errorf("cache directory was not created: %v", err)
+	}
+}

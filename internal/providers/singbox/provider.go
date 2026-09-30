@@ -142,7 +142,7 @@ func withDefaults(c *Config) *Config {
 		c.BinaryPath = "sing-box"
 	}
 	if c.ConfigPath == "" {
-		c.ConfigPath = config.DefaultConfigDir + "/sing-box/config.json"
+		c.ConfigPath = filepath.Join(config.DefaultConfigDir, "sing-box", "config.json")
 	}
 	if c.ConfigDir == "" {
 		c.ConfigDir = filepath.Dir(c.ConfigPath)
@@ -276,6 +276,13 @@ func (p *Provider) writeConfig() error {
 	}
 	for _, w := range p.config.Warnings {
 		p.log("warn", "%s", w)
+	}
+	// sing-box does not create the directory of its cache file, and /tmp is
+	// empty after a reboot: without it sing-box exits at start.
+	if ex := p.config.Experimental; ex != nil && ex.CacheFile != nil && ex.CacheFile.Path != "" {
+		if err := os.MkdirAll(filepath.Dir(ex.CacheFile.Path), 0755); err != nil {
+			p.log("warn", "cannot create the cache directory: %v", err)
+		}
 	}
 
 	first := p.writeChecked(p.config)
