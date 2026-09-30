@@ -5,9 +5,9 @@
 
 ---
 
-**HydraVPN for Router** — это комплексная, не зависящая от платформы реализация функционала обхода DPI для роутеров, вдохновленная Forkop и HydraVPN. Предоставляет единое решение, работающее на OpenWRT, KeeneticOS и MikroTik RouterOS с полной функциональной совместимостью.
+**HydraVPN for Router** — это комплексная, не зависящая от платформы реализация функционала обхода DPI для роутеров на базе sing-box, zapret и ByeDPI. Предоставляет единое решение, работающее на OpenWRT, KeeneticOS и MikroTik RouterOS с полной функциональной совместимостью.
 
-**HydraVPN for Router** is a comprehensive, platform-agnostic implementation of DPI bypass functionality for routers, inspired by Forkop and HydraVPN. It provides a unified solution that runs on OpenWRT, KeeneticOS, and MikroTik RouterOS with full feature parity.
+**HydraVPN for Router** is a comprehensive, platform-agnostic implementation of DPI bypass functionality for routers built on sing-box, zapret and ByeDPI. It provides a unified solution that runs on OpenWRT, KeeneticOS, and MikroTik RouterOS with full feature parity.
 
 ## Возможности / Features
 
@@ -62,7 +62,7 @@
 
 ## Установка / Installation
 
-Текущая версия / Current version: **1.0.3**. Подробности — в [INSTALL.md](INSTALL.md).
+Актуальная версия — на странице [Releases](https://github.com/Chistovik92/HydraVPNforRouters/releases) (`hydravpn-router version` показывает установленную). Подробности — в [INSTALL.md](INSTALL.md).
 
 ### OpenWRT, KeeneticOS (Entware), Linux
 
@@ -92,112 +92,54 @@ HydraVPN for Router uses a unified YAML configuration file (`/etc/hydravpn-route
 
 ```yaml
 settings:
-  config_version: "1.0.0"
-  dns_type: "udp"
-  dns_server:
-    - "77.88.8.8"
-    - "77.88.8.1"
-  bootstrap_dns_server:
-    - "77.88.8.8"
-    - "77.88.8.1"
-  dns_check_interval: "10s"
-  dns_recovery_check_interval: "60s"
-  dns_check_timeout: "2s"
-  dns_rewrite_ttl: 60
-  dns_strategy: "prefer_ipv4"
-  dns_detour_enabled: false
-  source_network_interfaces:
-    - "br-lan"
-  enable_output_network_interface: false
-  enable_badwan_interface_monitoring: false
-  enable_yacd: false
-  disable_quic: false
-  list_update_enabled: true
-  update_interval: "24h"
-  component_update_check_enabled: true
-  component_update_check_interval: "24h"
+  dns_server: ["77.88.8.8", "77.88.8.1"]
+  bootstrap_dns_server: ["77.88.8.8", "77.88.8.1"]
+  source_network_interfaces: ["br-lan"]      # чей трафик обрабатывается / whose traffic is handled
   latency_test_url: "https://www.gstatic.com/generate_204"
-  download_lists_via_proxy: false
-  download_components_via_proxy: false
-  dont_touch_dhcp: false
-  config_path: "/etc/hydravpn-router/sing-box/config.json"
-  cache_path: "/tmp/hydravpn-router/cache.db"
   log_level: "warn"
-  exclude_ntp: false
-  shutdown_correctly: false
 
+# Секция = «куда отправлять трафик» + «какой трафик». Секция без enabled: true отключена.
+# A section = "where to send traffic" + "which traffic". Without enabled: true it is off.
 sections:
-  - name: "my-subscription"
-    label: "My VPN"
+  - name: "main"
     enabled: true
-    action: "connection"
-    selector_proxy_links: []
-    community_lists:
-      - "russia_inside"
-    rule_set:
-      - "https://example.com/rules.srs"
-
-interfaces:
-  - section: "my-subscription"
-    name: "tun0"
-    domain_resolver_enabled: true
+    action: "connection"          # connection | bypass | block
+    provider: "singbox"           # singbox | zapret | zapret2 | byedpi
+    community_lists: ["youtube", "russia_inside"]
+    fully_routed_ips: ["192.168.1.50"]   # эти клиенты целиком через прокси / these clients fully via proxy
 
 subscription_urls:
-  - section: "my-subscription"
+  - section: "main"
     url: "https://example.com/subscription"
-    subscription_update_enabled: true
+    subscription_update_enabled: true    # без этого подписка скачивается один раз / otherwise fetched only once
     subscription_update_interval: "1h"
-    download_via_proxy_enabled: false
-    show_dashboard_metadata: true
+    auto_hwid: false                     # x-hwid для панелей с лимитом устройств / x-hwid for device-limited panels
 
-urltests:
-  - section: "my-subscription"
-    name: "Fastest"
+urltests:                                # выбор самого быстрого узла / fastest-node selection
+  - section: "main"
     check_interval: "3m"
     tolerance: 50
-    testing_url: "https://www.gstatic.com/generate_204"
-    idle_timeout: "30m"
-    interrupt_exist_connections: true
-    pin_dashboard: true
-
-servers:
-  - name: "vless-reality"
-    label: "VLESS Reality"
-    enabled: true
-    protocol: "vless"
-    listen: "0.0.0.0"
-    listen_port: 443
-    public_host: "vpn.example.com"
-    routing_mode: "rules"
-    security: "reality"
-    server_uuid: "00000000-0000-0000-0000-000000000000"
-    reality_private_key: "PRIVATE_KEY"
-    reality_public_key: "PUBLIC_KEY"
-    reality_short_id: "5a"
-    transport: "tcp"
 
 rules:
-  - section: "my-subscription"
+  - section: "main"
     enabled: true
-    outbound: "proxy-out"
-    domain_suffix:
-      - "google.com"
-      - "youtube.com"
-    geoip:
-      - "US"
-      - "EU"
+    domain_suffix: ["google.com"]        # правило без условий пропускается / a rule without matchers is skipped
 
-rule_sets:
+rule_sets:                               # только .srs и .json / only .srs and .json
   - name: "russia_inside"
     url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_inside.srs"
     interval: "24h"
 
 community_lists:
-  - name: "russia_inside"
+  - name: "youtube"
     type: "domain"
-    url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_inside.lst"
-    interval: "24h"
+    entries: ["youtube.com", "googlevideo.com", "ytimg.com"]
 ```
+
+Как это работает / How it works: из `subscription_urls` скачиваются узлы (vless/vmess/trojan/ss/hysteria2, sing-box JSON), для каждой секции строится `selector` + `urltest` в конфиге sing-box, а правила секции (`community_lists`, `rule_set`, `rules`, `fully_routed_ips`) направляют совпавший трафик в эту группу. Остальной трафик идёт напрямую. Подписки хранятся в кэше рядом с конфигом и работают после перезагрузки без сети; при обновлении узлов sing-box перезагружается автоматически. Конфиг проверяется `sing-box check`, при ошибке применяется минимальный конфиг без секций.
+Subscription nodes are downloaded, a `selector` + `urltest` per section is generated for sing-box, and the section rules route matching traffic to it; everything else goes direct. Nodes are cached next to the config; sing-box is reloaded when nodes change. The config is validated with `sing-box check`; if it is rejected, a minimal config without sections is applied.
+
+Ограничения / Limitations: `geoip`/`geosite` в `rules` не поддерживаются sing-box 1.12+ (используйте `rule_set`); транспорты xhttp/kcp не поддерживаются sing-box — такие узлы пропускаются с предупреждением; IPv6-трафик LAN не перехватывается.
 
 ## Использование CLI / CLI Usage
 
@@ -362,7 +304,6 @@ GPL-3.0-or-later
 
 ## Благодарности / Credits
 
-- **Forkop** — [https://github.com/ForkVPN/Forkop](https://github.com/ForkVPN/Forkop) — оригинальная OpenWRT реализация обхода DPI / Original OpenWRT DPI bypass implementation
 - **HydraVPN** — [https://github.com/HydraVPN/HydraVPN](https://github.com/HydraVPN/HydraVPN) — мобильный VPN клиент-референс / Mobile VPN client reference
 - **sing-box** — [https://github.com/SagerNet/sing-box](https://github.com/SagerNet/sing-box) — универсальная прокси-платформа / Universal proxy platform
 - **zapret/zapret2** — [https://github.com/bol-van/zapret](https://github.com/bol-van/zapret) — инструменты обхода DPI / DPI bypass tools

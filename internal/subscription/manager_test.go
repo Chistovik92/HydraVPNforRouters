@@ -101,3 +101,67 @@ func TestStartFetchesConfiguredSubscriptions(t *testing.T) {
 		t.Fatal("Stop deadlocked")
 	}
 }
+
+func TestParseLegacyShadowsocksAndJSONConfig(t *testing.T) {
+	legacy := "ss://" + base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:pass@1.2.3.4:8388")) + "#legacy"
+	obs, err := ParseSubscription(legacy)
+	if err != nil || len(obs) != 1 {
+		t.Fatalf("legacy ss: %v %v", obs, err)
+	}
+	if o := obs[0]; o.Method != "aes-256-gcm" || o.Password != "pass" || o.Server != "1.2.3.4" || o.Port != 8388 || o.Name != "legacy" {
+		t.Errorf("legacy ss parsed wrong: %+v", o)
+	}
+
+	doc := `{"outbounds":[{"type":"selector","tag":"sel","outbounds":["a"]},
+		{"type":"vless","tag":"a","server":"h.example","server_port":443,"uuid":"u"},{"type":"direct","tag":"d"}]}`
+	obs, err = ParseSubscription(doc)
+	if err != nil || len(obs) != 1 || obs[0].Raw == nil || obs[0].Name != "a" {
+		t.Fatalf("json config: %+v %v", obs, err)
+	}
+}
+
+func TestParseUserinfoAndRedact(t *testing.T) {
+	q := parseUserinfo("upload=1; download=2; total=3; expire=1700000000")
+	if q == nil || q.Upload != 1 || q.Download != 2 || q.Total != 3 || q.Expire.Unix() != 1700000000 {
+		t.Errorf("quota: %+v", q)
+	}
+	if parseUserinfo("") != nil {
+		t.Error("empty header must give no quota")
+	}
+	if got := redactURL("https://panel.example.com/sub/SECRET-TOKEN?x=1"); strings.Contains(got, "SECRET") {
+		t.Errorf("token leaked: %s", got)
+	}
+}
+
+func TestUpdateNotifiesAndKeepsQuota(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Subscription-Userinfo", "upload=5; download=6; total=100")
+		_, _ = w.Write([]byte(sampleLinks))
+	}))
+	defer srv.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.SubscriptionURLs = []config.SubscriptionURL{{Section: "main", URL: srv.URL, PrefixNodes: true, NodePrefix: "P-"}}
+	updated := make(chan struct{}, 1)
+	m := NewManager(Options{Config: cfg, OnUpdate: func() { updated <- struct{}{} }})
+	m.cacheDir = t.TempDir()
+	m.mu.Lock()
+	m.syncLocked(cfg)
+	m.mu.Unlock()
+
+	if err := m.ForceUpdate("main", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-updated:
+	default:
+		t.Error("OnUpdate was not called")
+	}
+	obs := m.GetOutbounds("main")
+	if len(obs) != 3 || !strings.HasPrefix(obs[0].Name, "P-") {
+		t.Errorf("outbounds/prefix: %+v", obs)
+	}
+	if st := m.GetStatus(); !strings.Contains(m.GetStatusJSON(), `"total": 100`) || st["update_count"] != 1 {
+		t.Errorf("status: %s", m.GetStatusJSON())
+	}
+}

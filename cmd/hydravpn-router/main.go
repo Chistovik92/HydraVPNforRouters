@@ -58,6 +58,13 @@ func (c *StartCmd) Run(g *Globals) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	if _, err := os.Stat(c.ConfigFile); os.IsNotExist(err) {
+		logLine("warn", "Config "+c.ConfigFile+" not found, running with defaults (no sections: nothing is routed)")
+	}
+	if len(cfg.Sections) == 0 {
+		logLine("warn", "No sections configured: all traffic goes direct. Add sections and subscription_urls to the config")
+	}
+
 	if pid, ok := readPID(g.pidFile()); ok && processAlive(pid) && pid != os.Getpid() {
 		return fmt.Errorf("already running (PID %d)", pid)
 	}

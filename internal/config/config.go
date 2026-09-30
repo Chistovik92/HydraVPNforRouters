@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -33,6 +34,9 @@ const (
 	DNSListenAddress = "127.0.0.42"
 	// MixedProxyPort is the port of the local sing-box mixed (HTTP/SOCKS) inbound.
 	MixedProxyPort = 4534
+	// ByeDPIPort is the SOCKS5 port of the local ByeDPI (ciadpi) instance;
+	// sections using the byedpi provider are routed to it by sing-box.
+	ByeDPIPort = 1080
 )
 
 // ActionType represents what action a section performs
@@ -407,11 +411,35 @@ func (c *Config) Validate() error {
 	if s.UpdateInterval < 0 || s.ComponentUpdateCheckInterval < 0 {
 		return fmt.Errorf("update intervals must not be negative")
 	}
+	names := make(map[string]bool, len(c.Sections))
 	for _, sec := range c.Sections {
+		if sec.Name == "" {
+			return fmt.Errorf("section without a name")
+		}
+		if names[sec.Name] {
+			return fmt.Errorf("duplicate section %q", sec.Name)
+		}
+		names[sec.Name] = true
 		switch sec.Provider {
 		case "", ProviderTypeSingBox, ProviderTypeZapret, ProviderTypeZapret2, ProviderTypeByeDPI, ProviderTypeAuto:
 		default:
 			return fmt.Errorf("section %q: unknown provider %q", sec.Name, sec.Provider)
+		}
+		switch sec.Action {
+		case "", ActionTypeConnection, ActionTypeBypass, ActionTypeBlock:
+		default:
+			return fmt.Errorf("section %q: unknown action %q", sec.Name, sec.Action)
+		}
+	}
+	for _, sub := range c.SubscriptionURLs {
+		if sub.URL == "" {
+			continue
+		}
+		if !names[sub.Section] {
+			return fmt.Errorf("subscription %q refers to unknown section %q", sub.URL, sub.Section)
+		}
+		if u, err := url.Parse(sub.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("subscription url %q must be a valid http(s) URL", sub.URL)
 		}
 	}
 	return nil

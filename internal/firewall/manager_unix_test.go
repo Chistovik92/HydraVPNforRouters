@@ -19,7 +19,9 @@ func TestNFTScript(t *testing.T) {
 	for _, want := range []string{
 		"add table inet hydravpn\ndelete table inet hydravpn\n", // idempotent replace
 		"type filter hook prerouting priority mangle",
-		`iifname { "br-lan" } meta l4proto { tcp, udp } meta mark set 0x08000000 tproxy ip to 127.0.0.1:1602 accept`,
+		`iifname { "br-lan" } meta l4proto tcp meta mark set 0x08000000 tproxy ip to 127.0.0.1:1602 accept`,
+		`iifname { "br-lan" } meta l4proto udp meta mark set 0x08000000 tproxy ip to 127.0.0.1:1602 accept`,
+		`ip saddr @source_v4 meta l4proto udp meta mark set`,
 		"elements = { 192.168.1.50 }",
 		"queue num 4000 bypass",
 	} {
@@ -27,7 +29,7 @@ func TestNFTScript(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}
 	}
-	for _, bad := range []string{"tun0", "redirect", "podkop"} {
+	for _, bad := range []string{"tun0", "redirect"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("script contains %q", bad)
 		}

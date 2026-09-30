@@ -7,12 +7,12 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 )
 
-func TestConfigFromPodkop(t *testing.T) {
+func TestConfigFromSettings(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Settings.DNSServers = []string{"77.88.8.8", "https://dns.example/dns-query", "1.1.1.1:5353"}
 	cfg.Settings.FakeIPEnabled = true
 
-	c := ConfigFromPodkop(cfg)
+	c := ConfigFromSettings(cfg, nil)
 	data, err := c.Render()
 	if err != nil {
 		t.Fatal(err)

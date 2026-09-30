@@ -54,6 +54,10 @@ type Engine struct {
 	errorCount  int
 	lastError   string
 
+	// subscription updates are applied by a goroutine so the update loop
+	// never waits for the engine lock (Stop waits for the update loop).
+	subsChanged chan struct{}
+
 	// Callbacks
 	onStateChange func(EngineState)
 	onLog         func(level, message string)
@@ -71,6 +75,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	e := &Engine{
 		config:        opts.Config,
 		state:         EngineStateStopped,
+		subsChanged:   make(chan struct{}, 1),
 		onStateChange: opts.OnStateChange,
 		onLog:         opts.OnLog,
 	}
@@ -81,7 +86,16 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 
 	e.dnsManager = dns.NewManager(dns.Options{Config: e.config, OnLog: e.log})
 	e.firewallManager = firewall.NewManager(firewall.Options{Config: e.config, OnLog: e.log})
-	e.subscriptionMgr = subscription.NewManager(subscription.Options{Config: e.config, OnLog: e.log})
+	e.subscriptionMgr = subscription.NewManager(subscription.Options{
+		Config: e.config,
+		OnLog:  e.log,
+		OnUpdate: func() {
+			select {
+			case e.subsChanged <- struct{}{}:
+			default:
+			}
+		},
+	})
 
 	return e, nil
 }
@@ -110,6 +124,7 @@ func (e *Engine) Start() error {
 
 	e.startTime = time.Now()
 	e.setState(EngineStateRunning)
+	go e.applySubscriptionUpdates(e.ctx)
 	e.log("info", "HydraVPN for Router started successfully")
 	return nil
 }
@@ -132,6 +147,41 @@ func (e *Engine) startComponents() error {
 		return fmt.Errorf("failed to start subscription manager: %w", err)
 	}
 	return nil
+}
+
+// applySubscriptionUpdates re-renders the sing-box config whenever the set of
+// subscription nodes changed.
+func (e *Engine) applySubscriptionUpdates(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.subsChanged:
+		}
+		// Let several updates that arrive together (start-up) collapse.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+
+		e.mu.Lock()
+		if ctx.Err() == nil && e.GetState() == EngineStateRunning {
+			if err := e.singboxProvider.Reload(e.singboxConfig()); err != nil {
+				e.log("error", "Failed to apply subscription update to sing-box: "+err.Error())
+				e.recordError(err)
+			} else {
+				e.log("info", "sing-box configuration updated from subscriptions")
+			}
+		}
+		e.mu.Unlock()
+	}
+}
+
+// singboxConfig renders the sing-box configuration for the current settings
+// and the subscription nodes fetched so far.
+func (e *Engine) singboxConfig() *singbox.Config {
+	return singbox.ConfigFromSettings(e.config, e.subscriptionMgr)
 }
 
 // stopComponents stops everything in reverse order; stopping a component
@@ -190,12 +240,13 @@ func (e *Engine) Reload(newConfig *config.Config) error {
 	}
 
 	note("DNS", e.dnsManager.Reload(newConfig))
+	// Subscriptions first: the sing-box config is built from their nodes.
+	note("subscriptions", e.subscriptionMgr.Reload(newConfig))
 	if running {
 		note("providers", e.reloadProviders())
 	}
 	e.firewallManager.SetNFQueue(e.nfqueueOptions())
 	note("firewall", e.firewallManager.Reload(newConfig))
-	note("subscriptions", e.subscriptionMgr.Reload(newConfig))
 
 	e.lastReload = time.Now()
 	e.reloadCount++
@@ -271,18 +322,18 @@ func (e *Engine) log(level, message string) {
 func (e *Engine) initProviders() {
 	// sing-box is the core and always runs.
 	e.singboxProvider = singbox.NewProvider(singbox.Options{
-		Config: singbox.ConfigFromPodkop(e.config),
+		Config: e.singboxConfig(),
 		OnLog:  e.log,
 	})
 
 	e.zapretProvider = nil
 	if e.zapretEnabled() {
-		e.zapretProvider = zapret.NewProvider(zapret.Options{Config: zapret.ConfigFromPodkop(e.config), OnLog: e.log})
+		e.zapretProvider = zapret.NewProvider(zapret.Options{Config: zapret.ConfigFromSettings(e.config), OnLog: e.log})
 	}
 
 	e.byedpiProvider = nil
 	if e.config.ProviderEnabled(config.ProviderTypeByeDPI) {
-		e.byedpiProvider = byedpi.NewProvider(byedpi.Options{Config: byedpi.ConfigFromPodkop(e.config), OnLog: e.log})
+		e.byedpiProvider = byedpi.NewProvider(byedpi.Options{Config: byedpi.ConfigFromSettings(e.config), OnLog: e.log})
 	}
 }
 
@@ -335,13 +386,13 @@ func (e *Engine) stopProviders() {
 // reloadProviders reloads running providers and starts or stops the
 // optional ones when they were enabled or disabled in the new config.
 func (e *Engine) reloadProviders() error {
-	if err := e.singboxProvider.Reload(singbox.ConfigFromPodkop(e.config)); err != nil {
+	if err := e.singboxProvider.Reload(e.singboxConfig()); err != nil {
 		return fmt.Errorf("sing-box: %w", err)
 	}
 
 	switch {
 	case e.zapretEnabled() && e.zapretProvider == nil:
-		e.zapretProvider = zapret.NewProvider(zapret.Options{Config: zapret.ConfigFromPodkop(e.config), OnLog: e.log})
+		e.zapretProvider = zapret.NewProvider(zapret.Options{Config: zapret.ConfigFromSettings(e.config), OnLog: e.log})
 		if err := e.zapretProvider.Start(e.ctx); err != nil {
 			return fmt.Errorf("zapret: %w", err)
 		}
@@ -349,7 +400,7 @@ func (e *Engine) reloadProviders() error {
 		e.zapretProvider.Stop()
 		e.zapretProvider = nil
 	case e.zapretProvider != nil:
-		if err := e.zapretProvider.Reload(zapret.ConfigFromPodkop(e.config)); err != nil {
+		if err := e.zapretProvider.Reload(zapret.ConfigFromSettings(e.config)); err != nil {
 			return fmt.Errorf("zapret: %w", err)
 		}
 	}
@@ -357,7 +408,7 @@ func (e *Engine) reloadProviders() error {
 	byedpiEnabled := e.config.ProviderEnabled(config.ProviderTypeByeDPI)
 	switch {
 	case byedpiEnabled && e.byedpiProvider == nil:
-		e.byedpiProvider = byedpi.NewProvider(byedpi.Options{Config: byedpi.ConfigFromPodkop(e.config), OnLog: e.log})
+		e.byedpiProvider = byedpi.NewProvider(byedpi.Options{Config: byedpi.ConfigFromSettings(e.config), OnLog: e.log})
 		if err := e.byedpiProvider.Start(e.ctx); err != nil {
 			return fmt.Errorf("byedpi: %w", err)
 		}
@@ -365,7 +416,7 @@ func (e *Engine) reloadProviders() error {
 		e.byedpiProvider.Stop()
 		e.byedpiProvider = nil
 	case e.byedpiProvider != nil:
-		if err := e.byedpiProvider.Reload(byedpi.ConfigFromPodkop(e.config)); err != nil {
+		if err := e.byedpiProvider.Reload(byedpi.ConfigFromSettings(e.config)); err != nil {
 			return fmt.Errorf("byedpi: %w", err)
 		}
 	}

@@ -99,9 +99,9 @@ func withDefaults(c *Config) *Config {
 	return c
 }
 
-// ConfigFromPodkop creates zapret config from the HydraVPN config.
+// ConfigFromSettings creates zapret config from the HydraVPN config.
 // zapret2 wins when both zapret and zapret2 sections are enabled.
-func ConfigFromPodkop(cfg *config.Config) *Config {
+func ConfigFromSettings(cfg *config.Config) *Config {
 	pt := config.ProviderTypeZapret2
 	if !cfg.ProviderEnabled(config.ProviderTypeZapret2) && cfg.ProviderEnabled(config.ProviderTypeZapret) {
 		pt = config.ProviderTypeZapret

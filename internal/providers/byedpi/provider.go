@@ -77,8 +77,8 @@ func withDefaults(c *Config) *Config {
 	return c
 }
 
-// ConfigFromPodkop creates ByeDPI config from the HydraVPN config
-func ConfigFromPodkop(cfg *config.Config) *Config {
+// ConfigFromSettings creates ByeDPI config from the HydraVPN config
+func ConfigFromSettings(cfg *config.Config) *Config {
 	return withDefaults(&Config{CmdOptions: cfg.ProviderOptions(config.ProviderTypeByeDPI)})
 }
 

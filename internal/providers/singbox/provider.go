@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,36 +40,31 @@ type Config struct {
 	Route        *Route
 	DNS          *DNSConfig
 	Experimental *ExperimentalConfig
+
+	// Warnings lists things that were skipped while building the config
+	// (unsupported nodes, rules without matchers, missing lists).
+	Warnings []string
+	// Fallback is a minimal config without user sections. It is used when
+	// the full config is rejected by "sing-box check", so a broken
+	// subscription node cannot take the router offline.
+	Fallback *Config
 }
 
-// Inbound represents a sing-box inbound
-type Inbound struct {
-	Type       string `json:"type"`
-	Tag        string `json:"tag"`
-	Listen     string `json:"listen,omitempty"`
-	ListenPort int    `json:"listen_port,omitempty"`
-}
-
-// Outbound represents a sing-box outbound
-type Outbound struct {
-	Type string `json:"type"`
-	Tag  string `json:"tag"`
-}
+// Inbound, Outbound and Rule are sing-box JSON objects.
+type (
+	Inbound  map[string]interface{}
+	Outbound map[string]interface{}
+	Rule     map[string]interface{}
+)
 
 // Route represents routing configuration
 type Route struct {
 	Rules                 []Rule `json:"rules"`
+	RuleSet               []Rule `json:"rule_set,omitempty"`
 	Final                 string `json:"final,omitempty"`
 	AutoDetectInterface   bool   `json:"auto_detect_interface,omitempty"`
+	DefaultInterface      string `json:"default_interface,omitempty"`
 	DefaultDomainResolver string `json:"default_domain_resolver,omitempty"`
-}
-
-// Rule represents a route rule
-type Rule struct {
-	Inbound  []string `json:"inbound,omitempty"`
-	Protocol string   `json:"protocol,omitempty"`
-	Action   string   `json:"action,omitempty"`
-	Outbound string   `json:"outbound,omitempty"`
 }
 
 // DNSConfig represents DNS configuration
@@ -157,119 +150,6 @@ func withDefaults(c *Config) *Config {
 	return c
 }
 
-// ConfigFromPodkop creates sing-box config from the HydraVPN config
-func ConfigFromPodkop(cfg *config.Config) *Config {
-	c := &Config{
-		BinaryPath: cfg.Settings.SingBoxBinary,
-		ConfigPath: cfg.Settings.ConfigPath,
-		LogLevel:   cfg.Settings.LogLevel,
-		DNS:        &DNSConfig{Servers: []DNSServer{}},
-	}
-
-	// A single tproxy inbound; the firewall redirects LAN traffic to it.
-	c.Inbounds = []Inbound{
-		{Type: "tproxy", Tag: "tproxy-in", Listen: "0.0.0.0", ListenPort: config.TProxyPort},
-		{Type: "direct", Tag: "dns-in", Listen: config.DNSListenAddress, ListenPort: 53},
-		{Type: "mixed", Tag: "service-mixed-in", Listen: "127.0.0.1", ListenPort: config.MixedProxyPort},
-	}
-	c.Outbounds = []Outbound{{Type: "direct", Tag: "direct-out"}}
-
-	c.Route = &Route{
-		Rules: []Rule{
-			{Action: "sniff"},
-			{Inbound: []string{"dns-in"}, Action: "hijack-dns"},
-			{Protocol: "dns", Action: "hijack-dns"},
-		},
-		Final: "direct-out",
-	}
-
-	for i, server := range cfg.Settings.DNSServers {
-		c.DNS.Servers = append(c.DNS.Servers, dnsServer(fmt.Sprintf("dns-server-%d", i), server, cfg.Settings.DNSType))
-	}
-	for i, server := range cfg.Settings.BootstrapDNSServers {
-		c.DNS.Servers = append(c.DNS.Servers, dnsServer(fmt.Sprintf("bootstrap-dns-%d", i), server, "udp"))
-	}
-	if len(cfg.Settings.DNSServers) > 0 {
-		c.DNS.Final = "dns-server-0"
-	} else if len(cfg.Settings.BootstrapDNSServers) > 0 {
-		c.DNS.Final = "bootstrap-dns-0"
-	}
-	// Host-name DNS servers (DoH/DoT) and outbounds need a resolver:
-	// the first bootstrap server, or the system resolver without one.
-	resolver := "bootstrap-dns-0"
-	if len(cfg.Settings.BootstrapDNSServers) == 0 {
-		resolver = "local-dns"
-		c.DNS.Servers = append(c.DNS.Servers, DNSServer{Type: "local", Tag: resolver})
-	}
-	c.Route.DefaultDomainResolver = resolver
-	for i := range c.DNS.Servers {
-		if s := &c.DNS.Servers[i]; s.Server != "" && net.ParseIP(s.Server) == nil {
-			s.DomainResolver = resolver
-		}
-	}
-	c.DNS.Strategy = string(cfg.Settings.DNSStrategy)
-
-	if cfg.Settings.FakeIPEnabled {
-		c.DNS.Servers = append(c.DNS.Servers, DNSServer{
-			Type:       "fakeip",
-			Tag:        "fakeip",
-			Inet4Range: "198.18.0.0/15",
-			Inet6Range: "fc00::/18",
-		})
-		c.DNS.Rules = append(c.DNS.Rules, DNSRule{QueryType: []string{"A", "AAAA"}, Server: "fakeip"})
-	}
-
-	if cfg.Settings.EnableYACD || cfg.Settings.FakeIPEnabled {
-		c.Experimental = &ExperimentalConfig{
-			CacheFile: &CacheFileConfig{
-				Enabled:     true,
-				Path:        cfg.Settings.CachePath,
-				StoreFakeIP: cfg.Settings.FakeIPEnabled,
-			},
-		}
-		if cfg.Settings.EnableYACD {
-			c.Experimental.ClashAPI = &ClashAPIConfig{ExternalController: "127.0.0.1:9090"}
-		}
-	}
-
-	return c
-}
-
-// dnsServer converts "1.1.1.1", "1.1.1.1:5353", "[2606:4700::1111]",
-// "tls://dns.example" or "https://dns.example/dns-query" into a typed server.
-func dnsServer(tag, address, defaultType string) DNSServer {
-	s := DNSServer{Tag: tag, Type: defaultType}
-	switch s.Type {
-	case "udp", "tcp", "tls", "https", "quic", "h3":
-	default:
-		s.Type = "udp"
-	}
-
-	if strings.Contains(address, "://") {
-		if u, err := url.Parse(address); err == nil && u.Hostname() != "" {
-			s.Type = u.Scheme
-			s.Server = u.Hostname()
-			if port, err := strconv.Atoi(u.Port()); err == nil {
-				s.ServerPort = port
-			}
-			if (s.Type == "https" || s.Type == "h3") && u.Path != "" && u.Path != "/dns-query" {
-				s.Path = u.Path
-			}
-			return s
-		}
-	}
-
-	if host, port, err := net.SplitHostPort(address); err == nil {
-		s.Server = host
-		if p, err := strconv.Atoi(port); err == nil {
-			s.ServerPort = p
-		}
-		return s
-	}
-	s.Server = strings.Trim(address, "[]")
-	return s
-}
-
 // Start starts sing-box
 func (p *Provider) Start(ctx context.Context) error {
 	p.mu.Lock()
@@ -287,23 +167,25 @@ func (p *Provider) Stop() error {
 	return nil
 }
 
-// Reload rewrites the configuration and asks sing-box to reload it.
+// Reload rewrites the configuration and asks sing-box to reload it. A
+// configuration that sing-box rejects is not applied.
 func (p *Provider) Reload(cfg *Config) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	oldBinary := p.config.BinaryPath
+	old := p.config
 	p.config = withDefaults(cfg)
 	if err := p.writeConfig(); err != nil {
+		p.config = old
 		return fmt.Errorf("write config: %w", err)
 	}
 
 	if !p.proc.Status().Running {
-		return nil
+		return p.proc.Start(p.config.BinaryPath, p.args())
 	}
 	// sing-box re-reads its configuration on SIGHUP; restart when the
 	// binary changed or signals are unsupported.
-	if oldBinary == p.config.BinaryPath {
+	if old.BinaryPath == p.config.BinaryPath {
 		if err := p.proc.Reload(); err == nil {
 			p.log("info", "sing-box reloaded")
 			return nil
@@ -358,18 +240,56 @@ func (c *Config) Render() ([]byte, error) {
 	return json.MarshalIndent(full, "", "  ")
 }
 
-// writeConfig writes the sing-box configuration atomically.
+// checkConfig validates a config file with "sing-box check". It is a
+// variable so tests can run without the sing-box binary.
+var checkConfig = func(binary, path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "check", "-c", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// writeConfig validates the configuration and writes it atomically. If the
+// full configuration is rejected, the minimal fallback is used instead so the
+// router keeps working; the error is logged.
 func (p *Provider) writeConfig() error {
 	if err := os.MkdirAll(p.config.ConfigDir, 0755); err != nil {
 		return err
 	}
-	data, err := p.config.Render()
+	for _, w := range p.config.Warnings {
+		p.log("warn", "%s", w)
+	}
+
+	err := p.writeChecked(p.config)
+	if err == nil {
+		return nil
+	}
+	if p.config.Fallback == nil {
+		return err
+	}
+	p.log("error", "config rejected, falling back to a minimal config without sections: %v", err)
+	fb := withDefaults(p.config.Fallback)
+	if ferr := p.writeChecked(fb); ferr != nil {
+		return fmt.Errorf("%v (fallback failed: %v)", err, ferr)
+	}
+	return nil
+}
+
+func (p *Provider) writeChecked(c *Config) error {
+	data, err := c.Render()
 	if err != nil {
 		return err
 	}
 	tmp := p.config.ConfigPath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
+	}
+	if err := checkConfig(p.config.BinaryPath, tmp); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("sing-box check: %w", err)
 	}
 	return os.Rename(tmp, p.config.ConfigPath)
 }

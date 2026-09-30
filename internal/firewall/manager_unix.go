@@ -213,10 +213,15 @@ func (m *Manager) nftScript() string {
 	b.WriteString("\t\ttype filter hook prerouting priority mangle; policy accept;\n")
 	b.WriteString("\t\tmeta nfproto != ipv4 return\n")
 	b.WriteString("\t\tip daddr @local_v4 return\n")
-	if ifaces := quoteAll(m.interfaces); len(ifaces) > 0 {
-		fmt.Fprintf(&b, "\t\tiifname { %s } meta l4proto { tcp, udp } %s\n", strings.Join(ifaces, ", "), tproxy)
+	// tproxy needs a single transport protocol match per rule, so tcp and
+	// udp get their own rules ("meta l4proto { tcp, udp } tproxy" is
+	// rejected by nft).
+	for _, proto := range []string{"tcp", "udp"} {
+		if ifaces := quoteAll(m.interfaces); len(ifaces) > 0 {
+			fmt.Fprintf(&b, "\t\tiifname { %s } meta l4proto %s %s\n", strings.Join(ifaces, ", "), proto, tproxy)
+		}
+		fmt.Fprintf(&b, "\t\tip saddr @source_v4 meta l4proto %s %s\n", proto, tproxy)
 	}
-	fmt.Fprintf(&b, "\t\tip saddr @source_v4 meta l4proto { tcp, udp } %s\n", tproxy)
 	b.WriteString("\t}\n")
 
 	if q := m.nfqueue; q != nil {

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.4
+
+### Рабочий режим / Real-world routing
+- The sing-box config now contains what the settings describe: proxy nodes from subscriptions, `selector` + `urltest` per section, routing rules from `sections`, `rules`, `community_lists`, `rule_set` and `fully_routed_ips`, `block`/`bypass` actions, ByeDPI sections routed to the local SOCKS port, inbound `servers` (VLESS/Reality or raw `inbound_json`). In 1.0.3 subscriptions were downloaded but never used, so no traffic was proxied.
+- sing-box is reloaded automatically when subscription nodes change; the config is validated with `sing-box check` before it is applied, and a minimal config without sections is used if it is rejected.
+- Subscriptions: nodes are cached next to the config (survives reboot, works offline), full sing-box JSON and legacy `ss://` are parsed, gRPC/ALPN/insecure options, `prefix_nodes`, `auto_hwid` (`x-hwid`), `Subscription-Userinfo` quota in `subs` status. Subscription URLs (tokens) are redacted in logs and status output.
+- Config validation: unique section names, known actions, subscriptions must reference an existing section and an http(s) URL.
+
+### Исправления / Fixes
+- Version drift: the `v1.0.3` tag pointed at a commit whose source still said 1.0.1, so builds from the tag reported 1.0.1. A test now fails if the version in the code, web UI, INSTALL.md, CHANGELOG or scripts differs.
+- Firewall: `tproxy` after `meta l4proto { tcp, udp }` is rejected by nft; tcp and udp now have separate rules.
+- Reload applies subscriptions before providers, so sing-box is rebuilt from the new sections.
+- Removed the unused ucode tree and references to other projects; `ConfigFromPodkop` was renamed to `ConfigFromSettings`.
+
+### Планы / Roadmap
+- 2.0.0: connect to an external Telegram bot (Radar) and receive subscriptions from it.
+
 ## 1.0.3
 
 ### Установка и обновление / Install & update

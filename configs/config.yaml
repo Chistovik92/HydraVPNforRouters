@@ -105,6 +105,7 @@ subscription_urls:
   #   auto_user_agent: false
   #   user_agent: "CustomAgent/1.0"
   #   auto_hwid: true
+  #   # Without subscription_update_enabled the subscription is fetched only once
   #   subscription_update_enabled: true
   #   subscription_update_interval: "1h"
   #   download_via_proxy_enabled: false
@@ -225,11 +226,11 @@ rule_sets:
   #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/geoblock.srs"
   #   interval: "24h"
 
-# Community Lists (Predefined domain/IP lists)
+# Community Lists: inline entries or a .srs/.json rule set URL
 community_lists:
   # - name: "russia_inside"
   #   type: "domain"
-  #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_inside.lst"
+  #   url: "https://github.com/itdoginfo/allow-domains/releases/latest/download/russia_inside.srs"
   #   interval: "24h"
   # - name: "youtube"
   #   type: "domain"
@@ -237,7 +238,8 @@ community_lists:
   #     - "googlevideo.com"
   #     - "youtube.com"
   #     - "ytimg.com"
-  # - name: "discord"
+  # - name: "my-subnets"
   #   type: "ip"
-  #   url: "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/discord.lst"
-  #   interval: "24h"
+  #   entries:
+  #     - "203.0.113.0/24"
+  # Only .srs / .json rule sets can be downloaded (url); plain .lst files cannot.
