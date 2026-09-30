@@ -28,14 +28,14 @@
 - **DNS Management** — failover, FakeIP, custom upstream servers, DoH/DoT support
 - **Clash API совместимость** — работает с Clash Dashboard, YACD и другими клиентами
 - **Clash API Compatible** — works with Clash Dashboard, YACD, and other Clash clients
-- **Веб-интерфейс** — нативные UI для каждой платформы (LuCI для OpenWRT, нативные для KeeneticOS/MikroTik)
-- **Web UI** — platform-native interfaces (LuCI for OpenWRT, native for KeeneticOS/MikroTik)
+- **Веб-интерфейс и JSON API** — встроенные, работают на всех платформах
+- **Web UI and JSON API** — built in, the same on every platform
 
 ### Поддержка платформ / Platform Support
 
 | Платформа / Platform | Формат пакета / Package Format | Веб-UI / Web UI | Init система / Init System | Статус / Status |
 |----------|---------------|--------|-------------|--------|
-| OpenWRT 21.02+ | IPK/APK | LuCI | procd | ✅ Полная / Full |
+| OpenWRT 21.02+ | IPK/APK | встроенный / built-in | procd | ✅ Полная / Full |
 | KeeneticOS 3.7+ | KNP/Entware | Native | ndm/Entware | ✅ Полная / Full |
 | RouterOS 7+ | NPK/Docker | Native | systemd/container | ✅ Полная / Full |
 
@@ -181,19 +181,21 @@ hydravpn-router subs
 `stop`, `reload` и команды статуса находят работающий сервис по PID-файлу в `--runtime-dir` (по умолчанию `/var/run/hydravpn-router`; на Keenetic Entware пути `/opt/...` определяются автоматически). `reload` отправляет SIGHUP: сервис перечитывает конфиг без перезапуска.
 `stop`, `reload` and the status commands find the running service through the PID file in `--runtime-dir` (default `/var/run/hydravpn-router`; Keenetic Entware `/opt/...` paths are detected automatically). `reload` sends SIGHUP: the service re-reads its config without a restart.
 
-## Веб-интерфейс / Web UI
+## Веб-интерфейс и API / Web UI and API
 
-### OpenWRT (LuCI)
-Доступ через `http://router.ip/cgi-bin/luci/admin/services/hydravpn-router`  
-Access via `http://router.ip/cgi-bin/luci/admin/services/hydravpn-router`
+Сервис содержит встроенный веб-интерфейс и JSON API (статус, журнал, подписки, серверы, узлы, диагностика). Включается в конфиге:
+The service has a built-in web UI and JSON API. Enable it in the config:
 
-### KeeneticOS
-Доступ через `http://router.ip/hydravpn-router` или `http://router.ip:8080`  
-Access via `http://router.ip/hydravpn-router` or `http://router.ip:8080`
+```yaml
+settings:
+  api_listen: "192.168.1.1:8088"   # пусто = выключено / empty = disabled
+  # api_token: "..."               # пусто = токен создаётся сам / empty = generated
+  # api_allow: ["192.168.1.0/24"]  # по умолчанию только локальные и частные сети / default: loopback and private networks only
+  # api_tls_cert: "/etc/hydravpn-router/tls.crt"
+  # api_tls_key: "/etc/hydravpn-router/tls.key"
+```
 
-### MikroTik
-Доступ через `http://router.ip:8080` (контейнер) или WinBox/WebFig  
-Access via `http://router.ip:8080` (container) or WinBox/WebFig
+Токен: `hydravpn-router api-token`. Интерфейс: `http://<адрес>:8088/`. Описание API и удалённого доступа: [docs/API.md](docs/API.md), [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md).
 
 ## Сборка из исходников / Building from Source
 
@@ -221,18 +223,8 @@ make docker-build
 
 ## API
 
-### Clash API (sing-box, порт 9090 / port 9090)
-При `enable_yacd: true` sing-box открывает свой Clash API на `127.0.0.1:9090`.
-With `enable_yacd: true` sing-box serves its own Clash API on `127.0.0.1:9090`.
-
-### RPC API (LuCI) — планируется, пока не реализовано / planned, not implemented yet
-- `get_status` — статус сервиса / service status
-- `get_config` — текущая конфигурация / current configuration
-- `set_config` — обновить конфигурацию / update configuration
-- `reload` — перезагрузить сервис / reload service
-- `get_subscriptions` — статус подписок / subscription status
-- `update_subscription` — принудительное обновление / force update
-- `run_diagnostics` — запуск проверок здоровья / run health checks
+См. [docs/API.md](docs/API.md). sing-box дополнительно открывает локальный Clash API на `127.0.0.1:9090` (только для самого роутера).
+See [docs/API.md](docs/API.md). sing-box also serves a local Clash API on `127.0.0.1:9090` (router only).
 
 ## Разработка / Development
 
@@ -251,18 +243,15 @@ hydravpn-router/
 │   │   └── byedpi/            # ByeDPI провайдер / ByeDPI provider
 │   ├── subscription/          # Управление подписками / Subscription management
 │   ├── diagnostics/           # Проверки здоровья / Health checks
-│   ├── api/                   # Clash API сервер / Clash API server
-│   └── platform/              # Адаптеры платформ / Platform adapters
-│       ├── openwrt/           # OpenWRT интеграция / OpenWRT integration
-│       ├── keenetic/          # KeeneticOS интеграция / KeeneticOS integration
-│       └── mikrotik/          # MikroTik интеграция / MikroTik integration
+│   ├── lists/                 # Загрузка .lst списков / .lst list downloader
+│   ├── mgmt/                  # Management API и веб-интерфейс / Management API and web UI
+│   ├── logx/                  # Журнал с ротацией / Journal with rotation
+│   ├── wanmon/                # Мониторинг WAN / WAN monitor
+│   ├── components/            # Проверка версий компонентов / Component version check
+│   └── dnsredirect/           # dnsmasq → sing-box для FakeIP / dnsmasq → sing-box for FakeIP
 ├── pkg/
 │   ├── version/               # Информация о версии / Version info
 │   └── utils/                 # Утилиты / Utilities
-├── web/                       # Исходники Web UI / Web UI sources
-│   ├── luci/                  # LuCI интерфейс / LuCI interface
-│   ├── keenetic/              # KeeneticOS UI
-│   └── mikrotik/              # MikroTik UI
 ├── build/                     # Скрипты сборки / Build scripts
 ├── configs/                   # Конфиги по умолчанию / Default configs
 ├── docs/                      # Документация / Documentation
@@ -282,21 +271,6 @@ hydravpn-router/
    }
    ```
 3. Зарегистрируйте при инициализации движка
-
-### Добавление новой платформы / Adding a New Platform
-
-1. Создайте платформу в `internal/platform/newplatform/`
-2. Реализуйте интерфейс `Platform`:
-   ```go
-   type Platform interface {
-       Initialize(ctx context.Context) error
-       Start(ctx context.Context) error
-       Stop() error
-       Reload(cfg *config.Config) error
-       GetSystemInfo() map[string]interface{}
-       GeneratePackage(version, outputDir string) error
-   }
-   ```
 
 ## Лицензия / License
 

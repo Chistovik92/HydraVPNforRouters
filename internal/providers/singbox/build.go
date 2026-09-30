@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,8 +39,11 @@ func ConfigFromSettings(cfg *config.Config, nodes NodeSource, opts ...Option) *C
 	for _, f := range opts {
 		f(&o)
 	}
-	c := build(cfg, nodes, o, true)
-	c.Fallback = build(cfg, nil, o, false)
+	// Fallback chain: without inbound servers/endpoints (they may need a
+	// sing-box build with extra features), then without any sections.
+	c := build(cfg, nodes, o, true, true)
+	c.Fallback = build(cfg, nodes, o, true, false)
+	c.Fallback.Fallback = build(cfg, nil, o, false, false)
 	return c
 }
 
@@ -68,7 +72,7 @@ type builder struct {
 	detours  map[string]string // node tag -> detour section
 }
 
-func build(cfg *config.Config, nodes NodeSource, o options, sections bool) *Config {
+func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bool) *Config {
 	b := &builder{
 		cfg:      cfg,
 		nodes:    nodes,
@@ -125,7 +129,9 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections bool) *Conf
 		for _, sec := range cfg.Sections {
 			b.used[sec.Name] = true
 		}
-		b.buildServers()
+		if servers {
+			b.buildServers()
+		}
 		for _, sec := range cfg.Sections {
 			if sec.Enabled {
 				b.buildSection(sec)
@@ -142,9 +148,9 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections bool) *Conf
 			StoreFakeIP: cfg.Settings.FakeIPEnabled,
 		},
 	}
-	if cfg.Settings.EnableYACD {
-		c.Experimental.ClashAPI = &ClashAPIConfig{ExternalController: "127.0.0.1:9090"}
-	}
+	// Local-only Clash API: used by the management API for node status,
+	// latency tests and manual selection (and by a dashboard if enabled).
+	c.Experimental.ClashAPI = &ClashAPIConfig{ExternalController: config.ClashAPIAddress}
 	return c
 }
 
@@ -620,6 +626,13 @@ func (b *builder) urltestFor(section string) *config.URLTest {
 }
 
 func urltestAllows(u *config.URLTest, name string) bool {
+	country := CountryOf(name)
+	if len(u.IncludeCountries) > 0 && !matchCountry(u.IncludeCountries, country) {
+		return false
+	}
+	if matchCountry(u.ExcludeCountries, country) {
+		return false
+	}
 	if len(u.IncludeOutbounds) > 0 && !contains(u.IncludeOutbounds, name) {
 		return false
 	}
@@ -846,6 +859,14 @@ func (b *builder) buildServers() {
 		if !srv.Enabled {
 			continue
 		}
+		if srv.Protocol == "tailscale" {
+			b.buildTailscale(srv)
+			continue
+		}
+		if srv.Protocol == "mtproto" && srv.InboundJSON == "" {
+			b.warn("server %q: MTProto is not supported by sing-box; use a separate MTProto proxy", srv.Name)
+			continue
+		}
 		in, err := buildInbound(srv)
 		if err != nil {
 			b.warn("server %q skipped: %v", srv.Name, err)
@@ -881,6 +902,8 @@ func buildInbound(srv config.Server) (Inbound, error) {
 		"listen_port": srv.ListenPort,
 	}
 	switch srv.Protocol {
+	case "tailscale":
+		return nil, fmt.Errorf("tailscale is an endpoint")
 	case "vless":
 		user := map[string]interface{}{"uuid": srv.ServerUUID}
 		if srv.VLESSFlow != "" && srv.VLESSFlow != "none" {
@@ -911,6 +934,35 @@ func buildInbound(srv config.Server) (Inbound, error) {
 		}
 	}
 	return in, nil
+}
+
+// buildTailscale adds a sing-box tailscale endpoint (needs a sing-box build
+// with the with_tailscale tag; "sing-box check" rejects the config otherwise
+// and the fallback chain drops it).
+func (b *builder) buildTailscale(srv config.Server) {
+	ep := Outbound{
+		"type":            "tailscale",
+		"tag":             b.uniqueTag(srv.Name),
+		"state_directory": filepath.Join(filepath.Dir(b.cfg.Settings.ConfigPath), "tailscale-"+srv.Name),
+	}
+	set := func(k, v string) {
+		if v != "" {
+			ep[k] = v
+		}
+	}
+	set("auth_key", srv.TailscaleAuthKey)
+	set("control_url", srv.TailscaleControlURL)
+	set("hostname", srv.TailscaleHostname)
+	if srv.TailscaleAcceptRoutes {
+		ep["accept_routes"] = true
+	}
+	if srv.TailscaleAdvertiseExitNode {
+		ep["advertise_exit_node"] = true
+	}
+	if routes := clean(srv.TailscaleAdvertiseRoutes); len(routes) > 0 {
+		ep["advertise_routes"] = routes
+	}
+	b.c.Endpoints = append(b.c.Endpoints, ep)
 }
 
 // tproxyListen is dual-stack when IPv6 interception is enabled.

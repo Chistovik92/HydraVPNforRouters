@@ -37,6 +37,7 @@ type Config struct {
 	LogLevel     string
 	Inbounds     []Inbound
 	Outbounds    []Outbound
+	Endpoints    []Outbound
 	Route        *Route
 	DNS          *DNSConfig
 	Experimental *ExperimentalConfig
@@ -234,6 +235,9 @@ func (c *Config) Render() ([]byte, error) {
 		"route":     c.Route,
 		"dns":       c.DNS,
 	}
+	if len(c.Endpoints) > 0 {
+		full["endpoints"] = c.Endpoints
+	}
 	if c.Experimental != nil {
 		full["experimental"] = c.Experimental
 	}
@@ -253,8 +257,9 @@ var checkConfig = func(binary, path string) error {
 }
 
 // writeConfig validates the configuration and writes it atomically. If the
-// full configuration is rejected, the minimal fallback is used instead so the
-// router keeps working; the error is logged.
+// configuration is rejected, the fallback chain is tried (first without
+// inbound servers, then without sections) so the router keeps working; the
+// error is logged.
 func (p *Provider) writeConfig() error {
 	if err := os.MkdirAll(p.config.ConfigDir, 0755); err != nil {
 		return err
@@ -263,19 +268,19 @@ func (p *Provider) writeConfig() error {
 		p.log("warn", "%s", w)
 	}
 
-	err := p.writeChecked(p.config)
-	if err == nil {
+	first := p.writeChecked(p.config)
+	if first == nil {
 		return nil
 	}
-	if p.config.Fallback == nil {
-		return err
+	err := first
+	for fb := p.config.Fallback; fb != nil; fb = fb.Fallback {
+		p.log("error", "config rejected, trying a reduced config: %v", err)
+		fbc := withDefaults(fb)
+		if err = p.writeChecked(fbc); err == nil {
+			return nil
+		}
 	}
-	p.log("error", "config rejected, falling back to a minimal config without sections: %v", err)
-	fb := withDefaults(p.config.Fallback)
-	if ferr := p.writeChecked(fb); ferr != nil {
-		return fmt.Errorf("%v (fallback failed: %v)", err, ferr)
-	}
-	return nil
+	return first
 }
 
 func (p *Provider) writeChecked(c *Config) error {

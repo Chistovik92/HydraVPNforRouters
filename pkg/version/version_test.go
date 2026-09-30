@@ -26,7 +26,6 @@ func TestVersionIsConsistent(t *testing.T) {
 	}
 
 	checks := []struct{ file, pattern string }{
-		{"web/luci/hydravpn-router.js", `HydraVPN\.version = '([^']+)'`},
 		{"INSTALL.md", `Version\*\*: (\S+)`},
 		{"CHANGELOG.md", `(?m)^## (\d+\.\d+\.\d+)`}, // first entry is the latest
 		{"scripts/install.sh", `--version (\d+\.\d+\.\d+)`},

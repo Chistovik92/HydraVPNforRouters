@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.7
+
+### Управление / Management
+- Built-in management API and web UI (`api_listen`): status, journal (also as a live stream), subscriptions and servers (add, remove, refresh; saved to the config and applied at once), node selection and latency tests, diagnostics. Token authentication, address filter (private networks by default), brute-force limit, optional TLS, audit of every change. See docs/API.md. `hydravpn-router api-token` prints the token.
+- Removed the unconnected code (`internal/api`, `internal/platform/*`) and the LuCI prototype that talked to a non-existent RPC.
+- sing-box exposes a local-only Clash API (127.0.0.1:9090) used for node status and latency.
+
+### Узлы и серверы / Nodes and servers
+- Country detection from the node name (flag emoji or a code like `[DE]`); `include_countries` / `exclude_countries` of `urltests` work.
+- `tailscale` servers become sing-box endpoints (needs a sing-box build with Tailscale support). MTProto is reported as unsupported by sing-box.
+- If sing-box rejects the generated config, the service tries a config without inbound servers/endpoints first and only then a minimal one, so one unsupported feature does not switch off all sections.
+
 ## 1.0.6
 
 ### Сети и списки / Networking and lists

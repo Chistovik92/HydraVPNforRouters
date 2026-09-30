@@ -37,6 +37,8 @@ const (
 	// ByeDPIPort is the SOCKS5 port of the local ByeDPI (ciadpi) instance;
 	// sections using the byedpi provider are routed to it by sing-box.
 	ByeDPIPort = 1080
+	// ClashAPIAddress is the local sing-box Clash API (node status, tests).
+	ClashAPIAddress = "127.0.0.1:9090"
 )
 
 // ActionType represents what action a section performs

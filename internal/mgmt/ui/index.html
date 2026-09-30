@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HydraVPN for Router</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1b1f24; --card:#fff; --line:#dde1e6; --accent:#2b6cb0; --bad:#c53030; --ok:#2f855a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171a; --fg:#e6e9ec; --card:#1d2126; --line:#2e353c; --accent:#63a4ff; --bad:#fc8181; --ok:#68d391; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; margin-right:auto; }
+  nav button { background:none; border:0; padding:6px 10px; color:var(--fg); cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.on { border-color:var(--accent); color:var(--accent); }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; word-break:break-all; }
+  input, select, button.act { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  button.act { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.act.bad { background:var(--bad); border-color:var(--bad); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  pre { margin:0; white-space:pre-wrap; word-break:break-all; max-height:60vh; overflow:auto; font-size:12px; }
+  .lv-error { color:var(--bad); } .lv-warn { color:#b7791f; }
+  #login { max-width:360px; margin:15vh auto; }
+</style>
+</head>
+<body>
+<div id="login" class="card" hidden>
+  <h3>HydraVPN for Router</h3>
+  <p>Введите токен API / Enter the API token</p>
+  <div class="row"><input id="tok" type="password" placeholder="token" style="flex:1"><button class="act" onclick="login()">OK</button></div>
+  <small>hydravpn-router api-token</small>
+</div>
+<div id="app" hidden>
+<header>
+  <h1>HydraVPN for Router <small id="ver"></small></h1>
+  <nav id="nav"></nav>
+  <button class="act" onclick="act('/api/v1/reload','POST')">Reload</button>
+</header>
+<main id="main"></main>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+let token = sessionStorage.getItem('token') || '';
+let tab = 'status', timer;
+const tabs = {status:'Статус', subs:'Подписки', nodes:'Узлы', servers:'Серверы', logs:'Журнал', checks:'Диагностика'};
+
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function api(path, method='GET', body){
+  const r = await fetch(path, {method, headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 401) { sessionStorage.removeItem('token'); token=''; start(); throw new Error('unauthorized'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+async function act(path, method, body){
+  try { await api(path, method, body); render(); } catch(e){ alert(e.message); }
+}
+function login(){ token = $('#tok').value; sessionStorage.setItem('token', token); start(); }
+
+async function start(){
+  clearInterval(timer);
+  if (!token) { $('#login').hidden = false; $('#app').hidden = true; return; }
+  try {
+    const v = await api('/api/v1/version');
+    $('#ver').textContent = v.version;
+  } catch(e) { $('#login').hidden = false; $('#app').hidden = true; return; }
+  $('#login').hidden = true; $('#app').hidden = false;
+  $('#nav').innerHTML = Object.entries(tabs).map(([k,v]) => `<button data-t="${k}" class="${k===tab?'on':''}">${v}</button>`).join('');
+  $('#nav').onclick = e => { if (e.target.dataset.t) { tab = e.target.dataset.t; start(); } };
+  render();
+  timer = setInterval(() => { if (tab==='status' || tab==='logs') render(); }, 5000);
+}
+
+async function render(){
+  const m = $('#main');
+  try {
+    if (tab === 'status') {
+      const s = await api('/api/v1/status');
+      const p = s.providers || {};
+      m.innerHTML = `<div class="card"><table>
+        <tr><th>Состояние</th><td class="${s.state==='running'?'ok':'bad'}">${esc(s.state)}</td></tr>
+        <tr><th>Версия / Uptime</th><td>${esc(s.version)} / ${esc(s.uptime)}</td></tr>
+        <tr><th>Перезагрузок / Ошибок</th><td>${s.reload_count} / ${s.error_count}</td></tr>
+        <tr><th>Последняя ошибка</th><td>${esc(s.last_error)}</td></tr>
+        <tr><th>sing-box</th><td>${p.singbox ? (p.singbox.running?'<span class=ok>running</span>':'<span class=bad>stopped</span>')+' pid '+p.singbox.pid : '-'}</td></tr>
+        <tr><th>Firewall</th><td>${s.firewall.running?'<span class=ok>active</span>':'<span class=bad>off</span>'} ${esc(s.firewall.backend)} ${esc(s.firewall.last_error)}</td></tr>
+        <tr><th>DNS</th><td>${esc((s.dns.current_servers||[]).join(', '))}</td></tr>
+      </table></div>
+      <div class="card"><b>Компоненты</b><pre>${esc(JSON.stringify(s.components,null,1))}</pre></div>`;
+    } else if (tab === 'subs') {
+      const l = await api('/api/v1/subscriptions'), st = (await api('/api/v1/status')).subscriptions.subscriptions || {};
+      m.innerHTML = `<div class="card"><table><tr><th>#</th><th>Секция</th><th>URL</th><th>Обновление</th><th></th></tr>` +
+        l.map(x => { const info = Object.values(st).find(v => v.section===x.section) || {};
+          return `<tr><td>${x.index}</td><td>${esc(x.section)}</td><td>${esc(x.url)}</td><td>${esc(info.last_update||'')} ${info.last_error?'<span class=bad>'+esc(info.last_error)+'</span>':''} (${info.outbounds??0})</td>
+          <td><button class=act data-a="refresh-sub" data-i="${x.index}">↻</button> <button class="act bad" data-a="del-sub" data-i="${x.index}">✕</button></td></tr>`; }).join('') + `</table></div>
+        <div class="card"><b>Добавить подписку</b><div class="row"><input id="ss" placeholder="секция"><input id="su" placeholder="https://…" style="flex:1"><button class=act onclick="addSub()">Добавить</button></div></div>`;
+    } else if (tab === 'nodes') {
+      const n = await api('/api/v1/nodes');
+      const groups = n.filter(x => x.members);
+      m.innerHTML = groups.map(g => `<div class="card"><b>${esc(g.name)}</b> <small>${esc(g.type)}</small><table>` +
+        g.members.map(mm => { const nd = n.find(x => x.name===mm) || {};
+          return `<tr><td>${g.now===mm?'●':''}</td><td>${esc(mm)}</td><td>${nd.delay_ms?nd.delay_ms+' ms':''}</td><td>
+          ${g.type==='Selector'?`<button class=act data-a="select" data-g="${esc(g.name)}" data-n="${esc(mm)}">выбрать</button>`:''}
+          <button class=act data-a="test" data-n="${esc(mm)}">тест</button></td></tr>`; }).join('') + `</table></div>`).join('') || '<div class=card>Нет групп</div>';
+    } else if (tab === 'servers') {
+      const l = await api('/api/v1/servers');
+      m.innerHTML = `<div class="card"><table><tr><th>Имя</th><th>Протокол</th><th>Порт</th><th></th></tr>` +
+        l.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.protocol)}</td><td>${x.listen_port}</td><td><button class="act bad" data-a="del-server" data-n="${esc(x.name)}">✕</button></td></tr>`).join('') + `</table></div>`;
+    } else if (tab === 'logs') {
+      const l = await api('/api/v1/logs?n=300');
+      m.innerHTML = `<div class="card"><pre>` + l.map(e => `<div class="lv-${e.level}">${esc(e.time.slice(11,19))} [${e.level}] ${esc(e.message)}</div>`).join('') + `</pre></div>`;
+    } else if (tab === 'checks') {
+      m.innerHTML = `<div class="card"><div class="row">` + ['global','dns','singbox','nft','proxy'].map(c => `<button class=act data-a="check" data-n="${c}">${c}</button>`).join('') + `</div><pre id="chk"></pre></div>`;
+    }
+  } catch(e) { m.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('button[data-a]'); if (!b) return;
+  const d = b.dataset;
+  switch (d.a) {
+    case 'refresh-sub': act('/api/v1/subscriptions/' + d.i + '/refresh', 'POST'); break;
+    case 'del-sub': if (confirm('Удалить?')) act('/api/v1/subscriptions/' + d.i, 'DELETE'); break;
+    case 'del-server': if (confirm('Удалить?')) act('/api/v1/servers/' + encodeURIComponent(d.n), 'DELETE'); break;
+    case 'select': act('/api/v1/nodes/select', 'POST', {group: d.g, node: d.n}); break;
+    case 'test': testNode(d.n, b); break;
+    case 'check': runCheck(d.n); break;
+  }
+});
+async function addSub(){ await act('/api/v1/subscriptions','POST',{section:$('#ss').value,url:$('#su').value}); }
+async function testNode(n,b){ b.textContent='…'; try { const r = await api('/api/v1/nodes/test','POST',{node:n}); b.textContent = r.delay_ms+' ms'; } catch(e){ b.textContent='✕'; } }
+async function runCheck(c){ $('#chk').textContent='…'; try { $('#chk').textContent = JSON.stringify(await api('/api/v1/check/'+c),null,1); } catch(e){ $('#chk').textContent=e.message; } }
+start();
+</script>
+</body>
+</html>

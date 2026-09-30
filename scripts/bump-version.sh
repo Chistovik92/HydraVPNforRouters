@@ -16,7 +16,6 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OLD=$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$ROOT/pkg/version/version.go")
 
 sed -i "s/Version   = \"$OLD\"/Version   = \"$NEW\"/" "$ROOT/pkg/version/version.go"
-sed -i "s/HydraVPN.version = '$OLD'/HydraVPN.version = '$NEW'/" "$ROOT/web/luci/hydravpn-router.js" 2>/dev/null || true
 sed -i "s/$OLD/$NEW/g" "$ROOT/INSTALL.md"
 sed -i "s/--version $OLD/--version $NEW/; s/v$OLD/v$NEW/" "$ROOT/scripts/install.sh"
 

@@ -550,3 +550,8 @@ func (e *Engine) providersStatusLocked() map[string]interface{} {
 	}
 	return status
 }
+
+// ForceUpdateSubscription fetches one subscription right now.
+func (e *Engine) ForceUpdateSubscription(section, url string) error {
+	return e.subscriptionMgr.ForceUpdate(section, url)
+}

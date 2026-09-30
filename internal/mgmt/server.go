@@ -1,0 +1,589 @@
+// Package mgmt is the management API and web UI of the service: status,
+// journal, subscriptions, servers, node selection and diagnostics over JSON.
+//
+// Every request needs the API token (Authorization: Bearer <token>). Only
+// private and loopback addresses may connect unless api_allow says
+// otherwise, and every state-changing call is written to the journal.
+package mgmt
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"crypto/tls"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
+	"github.com/Chistovik92/hydravpn-router/internal/logx"
+	"github.com/Chistovik92/hydravpn-router/pkg/version"
+)
+
+//go:embed ui/*
+var uiFS embed.FS
+
+// Engine is what the API needs from the service core.
+type Engine interface {
+	GetStatus() map[string]interface{}
+	GetConfig() *config.Config
+	Reload(*config.Config) error
+	ForceUpdateSubscription(section, url string) error
+}
+
+// Options configure a Server.
+type Options struct {
+	Engine     Engine
+	Logger     *logx.Logger
+	ConfigFile string // the file that mutations are saved to
+	RuntimeDir string // where a generated token is stored
+	Clash      *ClashClient
+}
+
+// Server is the management API.
+type Server struct {
+	opts  Options
+	token string
+	srv   *http.Server
+	allow []*net.IPNet
+
+	cfgMu sync.Mutex // serializes read-modify-write of the config file
+
+	failMu sync.Mutex
+	fails  map[string][]time.Time
+}
+
+// New builds a Server from the settings. It returns nil if api_listen is empty.
+func New(o Options) (*Server, error) {
+	s := o.Engine.GetConfig().Settings
+	if s.APIListen == "" {
+		return nil, nil
+	}
+	if o.Clash == nil {
+		o.Clash = NewClashClient(config.ClashAPIAddress)
+	}
+	srv := &Server{opts: o, fails: map[string][]time.Time{}}
+	tok, err := resolveToken(s.APIToken, o.RuntimeDir)
+	if err != nil {
+		return nil, err
+	}
+	srv.token = tok
+
+	allow := s.APIAllow
+	if len(allow) == 0 {
+		allow = []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fe80::/10"}
+	}
+	for _, a := range allow {
+		if !strings.Contains(a, "/") {
+			if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
+				a += "/32"
+			} else {
+				a += "/128"
+			}
+		}
+		_, n, err := net.ParseCIDR(a)
+		if err != nil {
+			return nil, fmt.Errorf("api_allow %q: %w", a, err)
+		}
+		srv.allow = append(srv.allow, n)
+	}
+
+	mux := http.NewServeMux()
+	srv.routes(mux)
+	srv.srv = &http.Server{Addr: s.APIListen, Handler: srv.guard(mux), ReadHeaderTimeout: 10 * time.Second}
+	return srv, nil
+}
+
+// TokenFile is where a generated token is stored.
+func TokenFile(runtimeDir string) string { return filepath.Join(runtimeDir, "api-token") }
+
+// resolveToken returns the configured token or a generated one that is kept
+// in the runtime directory (mode 0600) so it survives restarts of the CLI.
+func resolveToken(configured, runtimeDir string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	path := TokenFile(runtimeDir)
+	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) >= 16 {
+		return strings.TrimSpace(string(b)), nil
+	}
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	tok := hex.EncodeToString(raw)
+	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+		return "", err
+	}
+	return tok, os.WriteFile(path, []byte(tok+"\n"), 0600)
+}
+
+// Start serves in the background.
+func (s *Server) Start() error {
+	cfg := s.opts.Engine.GetConfig().Settings
+	ln, err := net.Listen("tcp", s.srv.Addr)
+	if err != nil {
+		return fmt.Errorf("management API: %w", err)
+	}
+	useTLS := cfg.APITLSCert != "" && cfg.APITLSKey != ""
+	if !useTLS && !isLoopbackAddr(s.srv.Addr) {
+		s.log("warn", "API listens on %s without TLS: the token travels in clear text. Set api_tls_cert/api_tls_key or use an SSH/VPN tunnel", s.srv.Addr)
+	}
+	go func() {
+		var err error
+		if useTLS {
+			s.srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+			err = s.srv.ServeTLS(ln, cfg.APITLSCert, cfg.APITLSKey)
+		} else {
+			err = s.srv.Serve(ln)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.log("error", "API stopped: %v", err)
+		}
+	}()
+	scheme := map[bool]string{true: "https", false: "http"}[useTLS]
+	s.log("info", "API listening on %s://%s", scheme, s.srv.Addr)
+	return nil
+}
+
+// Stop shuts the server down.
+func (s *Server) Stop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.srv.Shutdown(ctx)
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}
+
+// guard applies the address filter, the token check, brute-force limiting
+// and the audit log.
+func (s *Server) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(host)
+		if ip == nil || !s.allowed(ip) {
+			s.log("warn", "denied %s %s %s: address not allowed", host, r.Method, r.URL.Path)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		// The UI shell is public inside the allowed networks; data is not.
+		if r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/ui/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.blocked(host) {
+			http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
+			return
+		}
+		if !s.authorized(r) {
+			s.fail(host)
+			s.log("warn", "denied %s %s %s: bad token", host, r.Method, r.URL.Path)
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		if r.Method != http.MethodGet {
+			s.log("info", "%s %s %s -> %d", host, r.Method, r.URL.Path, rec.status)
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) { r.status = code; r.ResponseWriter.WriteHeader(code) }
+
+// Flush keeps server-sent events working through the recorder.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *Server) allowed(ip net.IP) bool {
+	for _, n := range s.allow {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if got == "" {
+		got = r.URL.Query().Get("token") // EventSource cannot set headers
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
+}
+
+func (s *Server) fail(host string) {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	s.fails[host] = append(s.fails[host], time.Now())
+}
+
+// blocked allows 10 failures per minute per address.
+func (s *Server) blocked(host string) bool {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	cut := time.Now().Add(-time.Minute)
+	kept := s.fails[host][:0]
+	for _, t := range s.fails[host] {
+		if t.After(cut) {
+			kept = append(kept, t)
+		}
+	}
+	s.fails[host] = kept
+	return len(kept) >= 10
+}
+
+func (s *Server) log(level, format string, args ...interface{}) {
+	if s.opts.Logger != nil {
+		s.opts.Logger.Log(level, "[api] "+fmt.Sprintf(format, args...))
+	}
+}
+
+// ---------------------------------------------------------------- routes
+
+func (s *Server) routes(mux *http.ServeMux) {
+	sub, _ := fs.Sub(uiFS, "ui")
+	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(sub))))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		data, _ := fs.ReadFile(sub, "index.html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
+	})
+
+	mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"version": version.Version, "commit": version.Commit})
+	})
+	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, s.opts.Engine.GetStatus())
+	})
+	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, s.opts.Engine.GetConfig().Masked())
+	})
+	mux.HandleFunc("POST /api/v1/reload", s.handleReload)
+
+	mux.HandleFunc("GET /api/v1/logs", s.handleLogs)
+	mux.HandleFunc("GET /api/v1/logs/stream", s.handleLogStream)
+
+	mux.HandleFunc("GET /api/v1/subscriptions", s.handleSubsList)
+	mux.HandleFunc("POST /api/v1/subscriptions", s.handleSubsAdd)
+	mux.HandleFunc("DELETE /api/v1/subscriptions/{index}", s.handleSubsDelete)
+	mux.HandleFunc("POST /api/v1/subscriptions/{index}/refresh", s.handleSubsRefresh)
+
+	mux.HandleFunc("GET /api/v1/servers", s.handleServersList)
+	mux.HandleFunc("POST /api/v1/servers", s.handleServersAdd)
+	mux.HandleFunc("DELETE /api/v1/servers/{name}", s.handleServersDelete)
+
+	mux.HandleFunc("GET /api/v1/nodes", s.handleNodes)
+	mux.HandleFunc("POST /api/v1/nodes/select", s.handleNodeSelect)
+	mux.HandleFunc("POST /api/v1/nodes/test", s.handleNodeTest)
+
+	mux.HandleFunc("GET /api/v1/check/{name}", s.handleCheck)
+}
+
+func writeJSON(w http.ResponseWriter, code int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+func readJSON(r *http.Request, v interface{}) error {
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+// mutate applies fn to the config file and reloads the service. The file is
+// re-read so manual edits made since start are not lost.
+func (s *Server) mutate(fn func(*config.Config) error) error {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	cfg, err := config.LoadFromFile(s.opts.ConfigFile)
+	if err != nil {
+		return err
+	}
+	if err := fn(cfg); err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.SaveToFile(s.opts.ConfigFile); err != nil {
+		return err
+	}
+	return s.opts.Engine.Reload(cfg)
+}
+
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.LoadFromFile(s.opts.ConfigFile)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := s.opts.Engine.Reload(cfg); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "reloaded"})
+}
+
+// ---------------------------------------------------------------- logs
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+	if n <= 0 || n > 1000 {
+		n = 200
+	}
+	writeJSON(w, 200, s.opts.Logger.Recent(n, r.URL.Query().Get("level")))
+}
+
+func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, 500, errors.New("streaming unsupported"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	ch, cancel := s.opts.Logger.Subscribe()
+	defer cancel()
+	fl.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case e := <-ch:
+			b, _ := json.Marshal(e)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			fl.Flush()
+		}
+	}
+}
+
+// ---------------------------------------------------------------- subscriptions
+
+func (s *Server) handleSubsList(w http.ResponseWriter, r *http.Request) {
+	cfg := s.opts.Engine.GetConfig().Masked()
+	type item struct {
+		Index int `json:"index"`
+		config.SubscriptionURL
+	}
+	out := make([]item, len(cfg.SubscriptionURLs))
+	for i, v := range cfg.SubscriptionURLs {
+		out[i] = item{i, v}
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) handleSubsAdd(w http.ResponseWriter, r *http.Request) {
+	var sub config.SubscriptionURL
+	if err := readJSON(r, &sub); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if sub.Section == "" || sub.URL == "" {
+		writeErr(w, 400, errors.New("section and url are required"))
+		return
+	}
+	// Fresh subscriptions refresh on their own unless the caller says no.
+	if sub.SubscriptionUpdateInterval == 0 {
+		sub.SubscriptionUpdateEnabled = true
+		sub.SubscriptionUpdateInterval = 24 * time.Hour
+	}
+	err := s.mutate(func(c *config.Config) error {
+		found := false
+		for _, sec := range c.Sections {
+			found = found || sec.Name == sub.Section
+		}
+		if !found {
+			return fmt.Errorf("unknown section %q", sub.Section)
+		}
+		for _, existing := range c.SubscriptionURLs {
+			if existing.Section == sub.Section && existing.URL == sub.URL {
+				return errors.New("subscription already exists")
+			}
+		}
+		c.SubscriptionURLs = append(c.SubscriptionURLs, sub)
+		return nil
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 201, map[string]string{"status": "added"})
+}
+
+func (s *Server) handleSubsDelete(w http.ResponseWriter, r *http.Request) {
+	idx, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	err = s.mutate(func(c *config.Config) error {
+		if idx < 0 || idx >= len(c.SubscriptionURLs) {
+			return errors.New("no such subscription")
+		}
+		c.SubscriptionURLs = append(c.SubscriptionURLs[:idx], c.SubscriptionURLs[idx+1:]...)
+		return nil
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleSubsRefresh(w http.ResponseWriter, r *http.Request) {
+	idx, err := strconv.Atoi(r.PathValue("index"))
+	cfg := s.opts.Engine.GetConfig()
+	if err != nil || idx < 0 || idx >= len(cfg.SubscriptionURLs) {
+		writeErr(w, 404, errors.New("no such subscription"))
+		return
+	}
+	sub := cfg.SubscriptionURLs[idx]
+	if err := s.opts.Engine.ForceUpdateSubscription(sub.Section, sub.URL); err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "updated"})
+}
+
+// ---------------------------------------------------------------- servers
+
+func (s *Server) handleServersList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.opts.Engine.GetConfig().Masked().Servers)
+}
+
+func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
+	var srv config.Server
+	if err := readJSON(r, &srv); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if srv.Name == "" {
+		writeErr(w, 400, errors.New("name is required"))
+		return
+	}
+	err := s.mutate(func(c *config.Config) error {
+		for _, e := range c.Servers {
+			if e.Name == srv.Name {
+				return errors.New("server already exists")
+			}
+		}
+		c.Servers = append(c.Servers, srv)
+		return nil
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 201, map[string]string{"status": "added"})
+}
+
+func (s *Server) handleServersDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	err := s.mutate(func(c *config.Config) error {
+		for i, e := range c.Servers {
+			if e.Name == name {
+				c.Servers = append(c.Servers[:i], c.Servers[i+1:]...)
+				return nil
+			}
+		}
+		return errors.New("no such server")
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+// ---------------------------------------------------------------- nodes
+
+func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
+	nodes, err := s.opts.Clash.Nodes(r.Context())
+	if err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	writeJSON(w, 200, nodes)
+}
+
+func (s *Server) handleNodeSelect(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Group, Node string }
+	if err := readJSON(r, &req); err != nil || req.Group == "" || req.Node == "" {
+		writeErr(w, 400, errors.New("group and node are required"))
+		return
+	}
+	if err := s.opts.Clash.Select(r.Context(), req.Group, req.Node); err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "selected"})
+}
+
+func (s *Server) handleNodeTest(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Node, URL string }
+	if err := readJSON(r, &req); err != nil || req.Node == "" {
+		writeErr(w, 400, errors.New("node is required"))
+		return
+	}
+	if req.URL == "" {
+		req.URL = s.opts.Engine.GetConfig().Settings.LatencyTestURL
+	}
+	ms, err := s.opts.Clash.Delay(r.Context(), req.Node, req.URL)
+	if err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	writeJSON(w, 200, map[string]int{"delay_ms": ms})
+}
+
+// ---------------------------------------------------------------- checks
+
+func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
+	d := diagnostics.NewDiagnostics(s.opts.Engine.GetConfig(), nil)
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	res, err := d.RunCheck(ctx, r.PathValue("name"))
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, res)
+}

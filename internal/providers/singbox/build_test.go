@@ -150,7 +150,7 @@ func TestSectionsProduceRoutingThroughProxy(t *testing.T) {
 	}
 
 	// The fallback config has no sections at all.
-	fb := render(t, c.Fallback)
+	fb := render(t, c.Fallback.Fallback)
 	if len(fb["outbounds"].([]interface{})) != 1 {
 		t.Errorf("fallback should only have direct-out: %v", fb["outbounds"])
 	}
@@ -210,7 +210,7 @@ func TestInvalidConfigFallsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(cfg.Settings.ConfigPath)
-	if strings.Contains(string(data), "main-auto") || calls != 2 {
+	if strings.Contains(string(data), "main-auto") || calls != 3 {
 		t.Errorf("fallback config expected (check calls: %d)", calls)
 	}
 }
@@ -255,5 +255,75 @@ func TestLstListsBecomeInlineRules(t *testing.T) {
 	}
 	if len(c.Route.RuleSet) != 0 {
 		t.Error(".lst must not become a remote rule set")
+	}
+}
+
+func TestCountryOf(t *testing.T) {
+	for name, want := range map[string]string{
+		"🇩🇪 Frankfurt 1": "DE",
+		"[NL] Amsterdam": "NL",
+		"US-East":        "US",
+		"VIP fast":       "",
+		"Server 1":       "",
+		"🇯🇵JP Tokyo":     "JP",
+	} {
+		if got := CountryOf(name); got != want {
+			t.Errorf("CountryOf(%q)=%q want %q", name, got, want)
+		}
+	}
+}
+
+func TestURLTestCountryFilters(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sections = []config.Section{{Name: "main", Enabled: true}}
+	cfg.URLTests = []config.URLTest{{Section: "main", IncludeCountries: []string{"DE", "🇳🇱"}, ExcludeOutbounds: []string{"[DE] slow"}}}
+	nodes := fakeNodes{"main": {
+		{Type: "trojan", Name: "[DE] fast", Server: "a.example", Port: 1, Password: "p", Security: "tls"},
+		{Type: "trojan", Name: "[DE] slow", Server: "b.example", Port: 1, Password: "p", Security: "tls"},
+		{Type: "trojan", Name: "[NL] one", Server: "c.example", Port: 1, Password: "p", Security: "tls"},
+		{Type: "trojan", Name: "[US] one", Server: "d.example", Port: 1, Password: "p", Security: "tls"},
+	}}
+	c := ConfigFromSettings(cfg, nodes)
+	for _, ob := range c.Outbounds {
+		if ob["type"] == "urltest" {
+			members := ob["outbounds"].([]string)
+			if len(members) != 2 || members[0] != "[DE] fast" || members[1] != "[NL] one" {
+				t.Errorf("urltest members: %v", members)
+			}
+			return
+		}
+	}
+	t.Error("no urltest group")
+}
+
+func TestServersAndFallbackChain(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Servers = []config.Server{
+		{Name: "vless-in", Enabled: true, Protocol: "vless", ListenPort: 8443, ServerUUID: "u", Security: "reality",
+			RealityHandshakeServer: "www.microsoft.com", RealityPrivateKey: "k", RealityShortID: "ab", RoutingMode: config.RoutingModeDirect},
+		{Name: "ts", Enabled: true, Protocol: "tailscale", TailscaleAuthKey: "tskey", TailscaleAdvertiseExitNode: true},
+		{Name: "mt", Enabled: true, Protocol: "mtproto"},
+	}
+	c := ConfigFromSettings(cfg, nil)
+	out := render(t, c)
+	if eps, ok := out["endpoints"].([]interface{}); !ok || eps[0].(map[string]interface{})["type"] != "tailscale" {
+		t.Errorf("tailscale endpoint missing: %v", out["endpoints"])
+	}
+	found := false
+	for _, in := range out["inbounds"].([]interface{}) {
+		if in.(map[string]interface{})["tag"] == "vless-in" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("vless inbound missing")
+	}
+	if !warned(c, "MTProto") {
+		t.Errorf("mtproto must warn: %v", c.Warnings)
+	}
+	// The first fallback keeps sections but drops servers and endpoints.
+	fb := render(t, c.Fallback)
+	if fb["endpoints"] != nil || len(fb["inbounds"].([]interface{})) != 3 {
+		t.Errorf("first fallback still has servers: %v", fb["inbounds"])
 	}
 }

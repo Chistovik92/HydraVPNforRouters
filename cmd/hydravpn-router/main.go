@@ -19,6 +19,7 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/core"
 	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
 	"github.com/Chistovik92/hydravpn-router/internal/logx"
+	"github.com/Chistovik92/hydravpn-router/internal/mgmt"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/alecthomas/kong"
 	"gopkg.in/yaml.v3"
@@ -46,6 +47,7 @@ var CLI struct {
 	Firewall  FirewallCmd  `cmd:"" help:"Show firewall status"`
 	Subs      SubsCmd      `cmd:"" help:"Show subscriptions status"`
 	Check     CheckCmd     `cmd:"" help:"Run diagnostics"`
+	APIToken  APITokenCmd  `cmd:"" name:"api-token" help:"Print the management API token"`
 }
 
 type StartCmd struct {
@@ -105,6 +107,17 @@ func (c *StartCmd) Run(g *Globals) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go writeStatusLoop(ctx, engine, g.statusFile())
+
+	api, err := mgmt.New(mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir})
+	if err != nil {
+		logLine("error", "management API disabled: "+err.Error())
+	} else if api != nil {
+		if err := api.Start(); err != nil {
+			logLine("error", err.Error())
+		} else {
+			defer api.Stop()
+		}
+	}
 
 	for sig := range sigCh {
 		if sig != syscall.SIGHUP {
@@ -364,6 +377,27 @@ type SubsCmd struct {
 }
 
 func (c *SubsCmd) Run(g *Globals) error { return printSection(g, "subscriptions", c.Format) }
+
+type APITokenCmd struct {
+	ConfigFile string `short:"c" help:"Configuration file path" default:"${config_file}"`
+}
+
+func (c *APITokenCmd) Run(g *Globals) error {
+	cfg, err := config.LoadFromFile(c.ConfigFile)
+	if err != nil {
+		return err
+	}
+	if cfg.Settings.APIToken != "" {
+		fmt.Println(cfg.Settings.APIToken)
+		return nil
+	}
+	data, err := os.ReadFile(mgmt.TokenFile(g.RuntimeDir))
+	if err != nil {
+		return errors.New("no token yet: set api_listen in the config and start the service")
+	}
+	fmt.Print(string(data))
+	return nil
+}
 
 type CheckCmd struct {
 	Check      string `arg:"" optional:"" help:"Check name (${checks}) or 'all'" default:"all"`
