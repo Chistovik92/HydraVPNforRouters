@@ -18,6 +18,7 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
 	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
+	"github.com/Chistovik92/hydravpn-router/internal/logx"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/alecthomas/kong"
 	"gopkg.in/yaml.v3"
@@ -58,6 +59,8 @@ func (c *StartCmd) Run(g *Globals) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	newJournal(cfg.Settings)
+	defer journal.Close()
 	if _, err := os.Stat(c.ConfigFile); os.IsNotExist(err) {
 		logLine("warn", "Config "+c.ConfigFile+" not found, running with defaults (no sections: nothing is routed)")
 	}
@@ -122,8 +125,23 @@ func (c *StartCmd) Run(g *Globals) error {
 	return nil
 }
 
-func logLine(level, msg string) {
-	fmt.Printf("%s [%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), level, msg)
+// journal is the application log; replaced by newJournal once the config is read.
+var journal, _ = logx.New(logx.Options{Level: "info"})
+
+func logLine(level, msg string) { journal.Log(level, msg) }
+
+func newJournal(s config.Settings) {
+	l, err := logx.New(logx.Options{
+		Level:   s.AppLogLevel,
+		File:    s.LogFile,
+		MaxSize: int64(s.LogMaxSizeMB) << 20,
+		Keep:    s.LogKeep,
+	})
+	if err != nil {
+		journal.Log("warn", "log file disabled: "+err.Error())
+		return
+	}
+	journal = l
 }
 
 // writeStatusLoop publishes the engine status for the CLI status commands.
@@ -284,14 +302,18 @@ type StatusCmd struct {
 func (c *StatusCmd) Run(g *Globals) error { return printSection(g, "", c.Format) }
 
 type ConfigCmd struct {
-	ConfigFile string `short:"c" help:"Configuration file path" default:"${config_file}"`
-	Format     string `short:"f" help:"Output format (json, yaml)" default:"yaml" enum:"json,yaml"`
+	ConfigFile  string `short:"c" help:"Configuration file path" default:"${config_file}"`
+	Format      string `short:"f" help:"Output format (json, yaml)" default:"yaml" enum:"json,yaml"`
+	ShowSecrets bool   `help:"Print keys, tokens and subscription URLs unmasked."`
 }
 
 func (c *ConfigCmd) Run() error {
 	cfg, err := config.LoadFromFile(c.ConfigFile)
 	if err != nil {
 		return err
+	}
+	if !c.ShowSecrets {
+		cfg = cfg.Masked()
 	}
 	if c.Format == "json" {
 		data, err := json.MarshalIndent(cfg, "", "  ")

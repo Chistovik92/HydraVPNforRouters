@@ -1,5 +1,4 @@
-# Shell scripts and router files must keep LF line endings.
-*.sh text eol=lf
-build/openwrt/** text eol=lf
-Dockerfile text eol=lf
-Makefile text eol=lf
+# Keep LF everywhere: scripts and router files break with CRLF.
+* text=auto eol=lf
+*.exe binary
+*.png binary

@@ -117,8 +117,20 @@ type Settings struct {
 	ConfigPath                        string        `yaml:"config_path" json:"config_path"`
 	CachePath                         string        `yaml:"cache_path" json:"cache_path"`
 	LogLevel                          string        `yaml:"log_level" json:"log_level"`
-	ExcludeNTP                        bool          `yaml:"exclude_ntp" json:"exclude_ntp"`
-	ShutdownCorrectly                 bool          `yaml:"shutdown_correctly" json:"shutdown_correctly"`
+	// Application journal (sing-box has its own log_level above).
+	AppLogLevel  string `yaml:"app_log_level" json:"app_log_level"`
+	LogFile      string `yaml:"log_file" json:"log_file"`
+	LogMaxSizeMB int    `yaml:"log_max_size_mb" json:"log_max_size_mb"`
+	LogKeep      int    `yaml:"log_keep" json:"log_keep"`
+	EnableIPv6   bool   `yaml:"enable_ipv6" json:"enable_ipv6"`
+	// Management API (see docs/API.md). Empty api_listen disables it.
+	APIListen         string   `yaml:"api_listen" json:"api_listen"`
+	APIToken          string   `yaml:"api_token" json:"api_token"`
+	APIAllow          []string `yaml:"api_allow" json:"api_allow"`
+	APITLSCert        string   `yaml:"api_tls_cert" json:"api_tls_cert"`
+	APITLSKey         string   `yaml:"api_tls_key" json:"api_tls_key"`
+	ExcludeNTP        bool     `yaml:"exclude_ntp" json:"exclude_ntp"`
+	ShutdownCorrectly bool     `yaml:"shutdown_correctly" json:"shutdown_correctly"`
 }
 
 // Section represents a configuration section (subscription, json_outbound, etc.)
@@ -316,6 +328,7 @@ func DefaultConfig() *Config {
 			ConfigPath:                      DefaultConfigDir + "/sing-box/config.json",
 			CachePath:                       DefaultCacheDir + "/cache.db",
 			LogLevel:                        "warn",
+			AppLogLevel:                     "info",
 			SingBoxBinary:                   "sing-box",
 			ExcludeNTP:                      false,
 			ShutdownCorrectly:               false,
@@ -394,6 +407,9 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if cfg.Settings.SingBoxBinary == "" {
 		cfg.Settings.SingBoxBinary = "sing-box"
+	}
+	if cfg.Settings.AppLogLevel == "" {
+		cfg.Settings.AppLogLevel = "info"
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -474,7 +490,8 @@ func (c *Config) ProviderOptions(p ProviderType) string {
 	return ""
 }
 
-// SaveToFile saves configuration to a YAML file
+// SaveToFile saves configuration to a YAML file atomically and keeps the
+// previous version as path+".bak". Comments of a hand-written file are lost.
 func (c *Config) SaveToFile(path string) error {
 	data, err := yaml.Marshal(c)
 	if err != nil {
@@ -483,5 +500,12 @@ func (c *Config) SaveToFile(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	if old, err := os.ReadFile(path); err == nil {
+		_ = os.WriteFile(path+".bak", old, 0600)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
