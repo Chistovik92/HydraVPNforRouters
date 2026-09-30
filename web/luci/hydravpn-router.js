@@ -9,7 +9,7 @@
 // HydraVPN namespace / Пространство имен HydraVPN
 window.HydraVPN = window.HydraVPN || {};
 
-HydraVPN.version = '1.0.4';
+HydraVPN.version = '1.0.5';
 HydraVPN.apiBase = '/cgi-bin/luci/rpc/hydravpn-router';
 
 // Initialize when DOM is ready / Инициализация при готовности DOM

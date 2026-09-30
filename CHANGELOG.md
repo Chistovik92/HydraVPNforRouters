@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5
+
+- `install.sh`: KeeneticOS without Entware is detected and the script stops with instructions (Keenetic is supported through Entware only, on a USB drive or in the built-in memory).
+- INSTALL.md: Keenetic (Entware) and MikroTik container notes and known limitations.
+- New ROADMAP.md.
+
 ## 1.0.4
 
 ### Рабочий режим / Real-world routing
