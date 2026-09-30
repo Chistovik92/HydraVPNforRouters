@@ -24,6 +24,8 @@ jobs:
         run: GOOS=windows go vet ./...
       - name: Test
         run: go test -race -count=1 ./...
+      - name: install.sh version comparison
+        run: sh scripts/test-install.sh
       - name: Vulnerabilities
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest

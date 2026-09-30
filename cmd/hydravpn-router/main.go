@@ -67,7 +67,9 @@ func (c *StartCmd) Run(g *Globals) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	applyDebugBuild(&cfg.Settings)
 	newJournal(cfg.Settings)
+	startPprof()
 	if err := process.KillChildrenOnExit(); err != nil {
 		logLine("warn", "cannot tie child processes to this process: "+err.Error())
 	}

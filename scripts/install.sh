@@ -77,10 +77,36 @@ ask() {
 # strip_v VERSION - "v1.2.1" -> "1.0.5"
 strip_v() { echo "${1#v}"; }
 
-# version_gt A B - true when A > B (numeric x.y.z comparison)
+# ident_gt A B - true when the dot-separated pre-release identifiers A > B
+# (numbers compare as numbers, anything else as text; a longer list wins a tie)
+ident_gt() {
+    a="$1"; b="$2"
+    while [ -n "$a" ] || [ -n "$b" ]; do
+        [ -z "$a" ] && return 1
+        [ -z "$b" ] && return 0
+        x="${a%%.*}"; y="${b%%.*}"
+        if [ "$x" != "$y" ]; then
+            case "$x$y" in
+                *[!0-9]*) [ "$(printf '%s\n%s\n' "$x" "$y" | LC_ALL=C sort | head -n 1)" = "$y" ] && return 0
+                          return 1 ;;
+                *) [ "$x" -gt "$y" ] && return 0
+                   return 1 ;;
+            esac
+        fi
+        case "$a" in *.*) a="${a#*.}" ;; *) a="" ;; esac
+        case "$b" in *.*) b="${b#*.}" ;; *) b="" ;; esac
+    done
+    return 1
+}
+
+# version_gt A B - true when A > B. x.y.z is compared numerically; a
+# pre-release suffix ("1.3.0-debug.2") sorts before its release ("1.3.0").
 version_gt() {
     [ "$1" = "$2" ] && return 1
-    a="$1"; b="$2"
+    a="${1%%-*}"; b="${2%%-*}"
+    pa=""; pb=""
+    case "$1" in *-*) pa="${1#*-}" ;; esac
+    case "$2" in *-*) pb="${2#*-}" ;; esac
     while [ -n "$a" ] || [ -n "$b" ]; do
         x="${a%%.*}"; y="${b%%.*}"
         x="${x:-0}"; y="${y:-0}"
@@ -89,7 +115,9 @@ version_gt() {
         case "$a" in *.*) a="${a#*.}" ;; *) a="" ;; esac
         case "$b" in *.*) b="${b#*.}" ;; *) b="" ;; esac
     done
-    return 1
+    [ -z "$pa" ] && [ -n "$pb" ] && return 0
+    [ -n "$pa" ] && [ -z "$pb" ] && return 1
+    ident_gt "$pa" "$pb"
 }
 
 # ---------------------------------------------------------------- detection
@@ -200,7 +228,7 @@ get_latest_version() {
 get_installed_version() {
     INSTALLED_VERSION=""
     if [ -n "${BIN:-}" ] && [ -x "$BIN" ]; then
-        INSTALLED_VERSION=$("$BIN" version 2>/dev/null | grep -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*' | head -n 1) || true
+        INSTALLED_VERSION=$("$BIN" version 2>/dev/null | grep -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.]*\)\{0,1\}' | head -n 1) || true
     fi
     if [ -n "$INSTALLED_VERSION" ]; then
         log_info "Installed version: $INSTALLED_VERSION"

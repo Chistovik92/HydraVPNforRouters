@@ -30,6 +30,8 @@ TARGETS=(
 )
 
 BUILD_TAGS="netgo,osusergo"
+# Debug pre-releases (1.2.2-debug.1) also carry pprof, served on 127.0.0.1 only.
+case "$VERSION" in *-debug*) BUILD_TAGS="$BUILD_TAGS,pprof" ;; esac
 COMMIT="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LDFLAGS="-s -w \
