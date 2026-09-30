@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+### Проверка роутера / Router verification
+- `hydravpn-router selftest`: runs on the router and checks sing-box (version, `sing-box check` of the generated config), the nftables ruleset (`nft --check`), kernel TPROXY support (loaded, built-in, `/proc/config.gz`, module files), `ip rule`, IPv4 forwarding, provider binaries and the KeeneticOS setup. `--print-nft` prints the ruleset for CI; `-f json` for machines.
+- KeeneticOS (Entware only): `install.sh` installs `/opt/etc/ndm/netfilter.d/50-hydravpn-router.sh`, which restores the rules after the firmware rebuilds its firewall. `reload` with an unchanged config now only re-applies the firewall rules instead of reloading sing-box.
+- docs/MIKROTIK.md: RouterOS container scheme with the mangle/routing/NAT commands.
+- Not yet verified on real hardware: run `hydravpn-router selftest` on your model; results decide the table of supported models.
+
 ## 1.1.0
 
 ### Оптимизация / Optimization (no behavior change)

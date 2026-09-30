@@ -8,7 +8,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-#   sh install.sh --yes --version 1.1.0
+#   sh install.sh --yes --version 1.2.0
 #
 # MikroTik RouterOS has no POSIX shell: use the container instructions in
 # INSTALL.md instead.
@@ -74,7 +74,7 @@ ask() {
     esac
 }
 
-# strip_v VERSION - "v1.1.0" -> "1.0.5"
+# strip_v VERSION - "v1.2.0" -> "1.0.5"
 strip_v() { echo "${1#v}"; }
 
 # version_gt A B - true when A > B (numeric x.y.z comparison)
@@ -309,6 +309,7 @@ PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
 . /opt/etc/init.d/rc.func
 EOF
             chmod 0755 "$SERVICE"
+            install_ndm_hook
             ;;
         linux)
             if command -v systemctl >/dev/null 2>&1; then
@@ -336,6 +337,32 @@ EOF
             fi
             ;;
     esac
+}
+
+# install_ndm_hook - KeeneticOS rebuilds its firewall on network events and
+# runs every script in /opt/etc/ndm/netfilter.d/ afterwards; the hook asks the
+# service to put its rules back (an unchanged config only re-applies rules).
+install_ndm_hook() {
+    hook_dir=/opt/etc/ndm/netfilter.d
+    mkdir -p "$hook_dir"
+    cat > "$hook_dir/50-hydravpn-router.sh" <<'EOF'
+#!/bin/sh
+# Installed by HydraVPN for Router. NDM passes $type (iptables|ip6tables) and $table.
+[ "$type" = "ip6tables" ] && exit 0
+[ "$table" = "mangle" ] || exit 0
+[ -x /opt/bin/hydravpn-router ] || exit 0
+
+STAMP=/tmp/hydravpn-router.ndm
+now=$(date +%s)
+last=$(cat "$STAMP" 2>/dev/null || echo 0)
+[ $((now - last)) -lt 3 ] && exit 0
+echo "$now" > "$STAMP"
+
+/opt/bin/hydravpn-router reload -c /opt/etc/hydravpn-router/config.yaml --runtime-dir /opt/var/run/hydravpn-router >/dev/null 2>&1 &
+exit 0
+EOF
+    chmod 0755 "$hook_dir/50-hydravpn-router.sh"
+    log_ok "NDM netfilter hook installed: $hook_dir/50-hydravpn-router.sh"
 }
 
 service_ctl() {
@@ -504,6 +531,7 @@ main() {
     printf "2. Apply changes:     %s reload\n" "$BIN"
     printf "3. Status:            %s status\n" "$BIN"
     printf "4. Diagnostics:       %s check all\n" "$BIN"
+    printf "5. Router self-test:  %s selftest   (nft, sing-box, kernel tproxy)\n" "$BIN"
     printf "\nDocs: https://github.com/%s/%s/blob/main/INSTALL.md\n" "$REPO_OWNER" "$REPO_NAME"
 }
 

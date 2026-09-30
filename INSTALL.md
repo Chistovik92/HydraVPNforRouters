@@ -1,6 +1,6 @@
 # Установка HydraVPN for Router / Installation Guide
 
-> **Версия / Version**: 1.1.0
+> **Версия / Version**: 1.2.0
 
 ---
 
@@ -18,8 +18,8 @@
 | `hydravpn-router-<ver>-linux-mips` | MIPS big-endian (ath79/QCA) |
 | `hydravpn-router-<ver>-linux-mips64`, `-mips64le`, `-386` | прочие / other |
 
-`<ver>` без буквы `v` (например `1.1.0`), тег релиза — `v1.1.0`.
-`<ver>` has no `v` prefix (e.g. `1.1.0`); the release tag is `v1.1.0`.
+`<ver>` без буквы `v` (например `1.2.0`), тег релиза — `v1.2.0`.
+`<ver>` has no `v` prefix (e.g. `1.2.0`); the release tag is `v1.2.0`.
 
 MIPS-сборки используют softfloat и работают на роутерах без FPU.
 MIPS builds use softfloat and run on routers without an FPU.
@@ -47,7 +47,7 @@ wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/
 4. создаёт конфиг, только если его ещё нет / creates a config only if none exists;
 5. регистрирует сервис (procd / Entware rc.func / systemd) и запускает его / registers and starts the service.
 
-Опции / Options: `--yes` (без вопросов, для cron), `--version 1.1.0`, `--method docker`, `--help`.
+Опции / Options: `--yes` (без вопросов, для cron), `--version 1.2.0`, `--method docker`, `--help`.
 
 | Платформа | Бинарник | Конфиг | Сервис |
 |---|---|---|---|
@@ -69,9 +69,11 @@ KeeneticOS is closed; software goes to the OPKG storage (`/opt`) on a USB drive 
    ```
    Скрипт поставит `sing-box-go` из Entware, бинарник в `/opt/bin`, конфиг `/opt/etc/hydravpn-router/config.yaml` (LAN — `br0`) и сервис `/opt/etc/init.d/S99hydravpn-router`.
 
+После установки выполните проверку роутера: `hydravpn-router selftest` (`nft --check`, `sing-box check`, поддержка tproxy в ядре, хук NDM).
+
 Ограничения (не проверены на железе, см. [ROADMAP.md](ROADMAP.md)):
 - прозрачный перехват (`tproxy`) требует в ядре `nf_tables`/`nft_tproxy` или `xt_TPROXY`; если модуля нет в прошивке вашей модели, режим `singbox` работать не будет, а `zapret`/`byedpi` — по своим требованиям;
-- NDM пересобирает правила Netfilter при смене состояния сети; для устойчивости нужен хук в `/opt/etc/ndm/netfilter.d/` (запланирован);
+- NDM пересобирает правила Netfilter при смене состояния сети; `install.sh` ставит хук `/opt/etc/ndm/netfilter.d/50-hydravpn-router.sh`, который возвращает правила сервиса (при неизменном конфиге перезагружаются только правила firewall);
 - на встроенной памяти мало места: используйте `log_level: warn` и не включайте лишние списки.
 
 ### OpenWRT: пакет .ipk / .ipk package
@@ -79,7 +81,7 @@ KeeneticOS is closed; software goes to the OPKG storage (`/opt`) on a USB drive 
 Пакет собирается командой `make build-openwrt` (Docker) под архитектуры OpenWRT (`x86_64`, `aarch64_generic`, `aarch64_cortex-a53`, `arm_cortex-a7_neon-vfpv4`, `arm_cortex-a9`, `mipsel_24kc`, `mips_24kc`):
 
 ```bash
-opkg install /tmp/hydravpn-router_1.1.0_mipsel_24kc.ipk
+opkg install /tmp/hydravpn-router_1.2.0_mipsel_24kc.ipk
 ```
 
 Архитектуру роутера покажет `opkg print-architecture`. OpenWRT 25+ (apk) пока поддерживается только через `install.sh`.
@@ -91,7 +93,7 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. Use the contain
 
 1. Соберите образ под архитектуру роутера / Build the image for the router architecture:
    ```bash
-   docker buildx build --platform linux/arm64 -t hydravpn-router:1.1.0 --output type=docker,dest=hydravpn-router.tar .
+   docker buildx build --platform linux/arm64 -t hydravpn-router:1.2.0 --output type=docker,dest=hydravpn-router.tar .
    ```
    (`linux/arm/v7` для ARM32 / for ARM32)
 2. Загрузите `hydravpn-router.tar` на роутер (`disk1/`) и выполните / Upload it and run:
@@ -102,7 +104,7 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. Use the contain
    /container start [find tag~"hydravpn"]
    ```
 
-Ограничения MikroTik (не проверены на железе): контейнеры доступны на RouterOS 7.6+ с пакетом `container` и только на ARM/ARM64/x86 (не на MIPS-моделях). Контейнер работает в своей сети (`veth`), поэтому LAN-трафик нужно направить в него на стороне RouterOS (маркировка в `/ip firewall mangle` и маршрут через `172.17.0.2`), а в конфиге задать `source_network_interfaces: ["eth0"]` (интерфейс контейнера). Автоматической настройки RouterOS пока нет.
+Ограничения MikroTik (не проверены на железе): контейнеры доступны на RouterOS 7.6+ с пакетом `container` и только на ARM/ARM64/x86 (не на MIPS-моделях). Контейнер работает в своей сети (`veth`), поэтому LAN-трафик нужно направить в него на стороне RouterOS (маркировка в `/ip firewall mangle` и маршрут через `172.17.0.2`), а в конфиге задать `source_network_interfaces: ["eth0"]` (интерфейс контейнера). Подробная схема и команды RouterOS: [docs/MIKROTIK.md](docs/MIKROTIK.md). Автоматической настройки RouterOS нет.
 
 Если образ опубликован в реестре (`make docker-build && docker push ...`), вместо `file=` укажите `remote-image=`.
 

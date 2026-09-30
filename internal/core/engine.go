@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -302,6 +303,18 @@ func (e *Engine) Reload(newConfig *config.Config) error {
 
 	if newConfig == nil {
 		return fmt.Errorf("reload: nil config")
+	}
+
+	// An unchanged config (for example the KeeneticOS netfilter hook after the
+	// firmware rebuilt its firewall) only needs the firewall rules back.
+	if e.GetState() == EngineStateRunning && reflect.DeepEqual(e.config, newConfig) {
+		e.log("info", "Configuration unchanged: re-applying firewall rules")
+		err := e.firewallManager.Reload(newConfig)
+		if err != nil {
+			e.log("error", "Failed to re-apply firewall: "+err.Error())
+			e.recordError(err)
+		}
+		return err
 	}
 
 	e.log("info", "Reloading configuration")

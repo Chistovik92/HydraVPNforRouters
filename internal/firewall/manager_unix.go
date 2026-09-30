@@ -255,6 +255,14 @@ func (m *Manager) nftScript() string {
 	return b.String()
 }
 
+// NFTScript renders the ruleset the service would apply for cfg. It is used
+// by "selftest" and CI to validate the rules with "nft --check".
+func NFTScript(cfg *config.Config, nfq *NFQueueOptions) string {
+	m := NewManager(Options{Config: cfg})
+	m.nfqueue = nfq
+	return m.nftScript()
+}
+
 func writeSet(b *strings.Builder, name, typ string, elems []string) {
 	fmt.Fprintf(b, "\tset %s {\n\t\ttype %s\n\t\tflags interval\n\t\tauto-merge\n", name, typ)
 	if len(elems) > 0 {

@@ -18,8 +18,10 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
 	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
+	"github.com/Chistovik92/hydravpn-router/internal/firewall"
 	"github.com/Chistovik92/hydravpn-router/internal/logx"
 	"github.com/Chistovik92/hydravpn-router/internal/mgmt"
+	"github.com/Chistovik92/hydravpn-router/internal/selftest"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/alecthomas/kong"
 	"gopkg.in/yaml.v3"
@@ -49,6 +51,7 @@ var CLI struct {
 	Check     CheckCmd     `cmd:"" help:"Run diagnostics"`
 	APIToken  APITokenCmd  `cmd:"" name:"api-token" help:"Print the management API token"`
 	Pair      PairCmd      `cmd:"" help:"Print the link that adds this router to the HydraVPN app"`
+	Selftest  SelftestCmd  `cmd:"" help:"Check this router: nft --check, sing-box check, kernel tproxy support"`
 }
 
 type StartCmd struct {
@@ -397,6 +400,43 @@ func (c *APITokenCmd) Run(g *Globals) error {
 		return errors.New("no token yet: set api_listen in the config and start the service")
 	}
 	fmt.Print(string(data))
+	return nil
+}
+
+type SelftestCmd struct {
+	ConfigFile string `short:"c" help:"Configuration file path" default:"${config_file}"`
+	Format     string `short:"f" help:"Output format (json, text)" default:"text" enum:"json,text"`
+	PrintNFT   bool   `name:"print-nft" help:"Only print the generated nftables ruleset (for nft --check in CI)"`
+}
+
+func (c *SelftestCmd) Run() error {
+	cfg, err := config.LoadFromFile(c.ConfigFile)
+	if err != nil {
+		return err
+	}
+	if c.PrintNFT {
+		script := firewall.NFTScript(cfg, nil)
+		if script == "" {
+			return errors.New("nftables rules are not available on " + runtime.GOOS)
+		}
+		fmt.Print(script)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	res := selftest.Run(ctx, cfg, selftest.SystemEnv())
+	if c.Format == "json" {
+		if err := printValue(res, "json"); err != nil {
+			return err
+		}
+	} else {
+		for _, r := range res {
+			fmt.Printf("[%-4s] %-16s %s\n", strings.ToUpper(r.Status), r.Name, r.Message)
+		}
+	}
+	if selftest.Failed(res) {
+		return errors.New("selftest found problems")
+	}
 	return nil
 }
 

@@ -150,3 +150,6 @@ func (m *Manager) RemoveSourceIP(ip string) error {
 func (m *Manager) SetNFQueue(opts *NFQueueOptions) error {
 	return nil
 }
+
+// NFTScript is not available on Windows (there is no nftables).
+func NFTScript(cfg *config.Config, nfq *NFQueueOptions) string { return "" }
