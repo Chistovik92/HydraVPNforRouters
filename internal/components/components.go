@@ -26,12 +26,13 @@ type Component struct {
 	Name       string
 	Repo       string // GitHub owner/name
 	MinVersion string // oldest version the generated configs work with
+	Tested     string // newest major.minor the configs were tested with (see docs/components.tsv)
 }
 
 // Tracked are the components whose versions are checked. Keep in sync with
 // docs/COMPONENTS.md.
 var Tracked = []Component{
-	{Name: "sing-box", Repo: "SagerNet/sing-box", MinVersion: "1.12.0"},
+	{Name: "sing-box", Repo: "SagerNet/sing-box", MinVersion: "1.12.0", Tested: "1.14"},
 }
 
 // Info is the result for one component.
@@ -41,6 +42,7 @@ type Info struct {
 	Latest    string `json:"latest"`
 	Update    bool   `json:"update_available"`
 	TooOld    bool   `json:"too_old"`
+	Untested  bool   `json:"untested_newer"`
 	Error     string `json:"error,omitempty"`
 	Checked   string `json:"checked,omitempty"`
 }
@@ -69,6 +71,14 @@ func Compare(a, b string) int {
 		}
 	}
 	return 0
+}
+
+func majorMinor(v string) string {
+	p := strings.Split(v, ".")
+	if len(p) > 2 {
+		p = p[:2]
+	}
+	return strings.Join(p, ".")
 }
 
 // Checker runs periodic checks.
@@ -154,6 +164,7 @@ func (c *Checker) CheckAll(ctx context.Context) {
 		} else {
 			info.Installed = v
 			info.TooOld = comp.MinVersion != "" && Compare(v, comp.MinVersion) < 0
+			info.Untested = comp.Tested != "" && Compare(majorMinor(v), comp.Tested) > 0
 		}
 		if latest, err := c.latest(ctx, comp.Repo, proxy); err != nil {
 			if info.Error == "" {
@@ -170,6 +181,8 @@ func (c *Checker) CheckAll(ctx context.Context) {
 		switch {
 		case info.TooOld:
 			c.log("error", "%s %s is older than the supported %s: update it", comp.Name, info.Installed, comp.MinVersion)
+		case info.Untested:
+			c.log("warn", "%s %s is newer than the tested %s: report problems if routing breaks", comp.Name, info.Installed, comp.Tested)
 		case info.Update:
 			c.log("info", "%s update available: %s -> %s", comp.Name, info.Installed, info.Latest)
 		}

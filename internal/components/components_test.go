@@ -38,3 +38,15 @@ func TestCheckAllFlagsUpdateAndOldVersion(t *testing.T) {
 		t.Errorf("current version flagged: %+v", info)
 	}
 }
+
+func TestNewerThanTestedIsFlagged(t *testing.T) {
+	c := New(config.DefaultConfig(), nil)
+	c.latest = func(context.Context, string, string) (string, error) { return "1.16.0", nil }
+	for v, want := range map[string]bool{"1.14.9": false, "1.15.0": true, "2.0.0": true, "1.12.5": false} {
+		c.installed = func(string) (string, error) { return v, nil }
+		c.CheckAll(context.Background())
+		if got := c.GetStatus()["sing-box"].(Info).Untested; got != want {
+			t.Errorf("%s untested=%v want %v", v, got, want)
+		}
+	}
+}

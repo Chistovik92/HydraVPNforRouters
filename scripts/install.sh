@@ -8,7 +8,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-#   sh install.sh --yes --version 1.0.8
+#   sh install.sh --yes --version 1.0.9
 #
 # MikroTik RouterOS has no POSIX shell: use the container instructions in
 # INSTALL.md instead.
@@ -74,7 +74,7 @@ ask() {
     esac
 }
 
-# strip_v VERSION - "v1.0.8" -> "1.0.5"
+# strip_v VERSION - "v1.0.9" -> "1.0.5"
 strip_v() { echo "${1#v}"; }
 
 # version_gt A B - true when A > B (numeric x.y.z comparison)

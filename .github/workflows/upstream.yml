@@ -1,0 +1,33 @@
+name: Upstream
+
+# Weekly: compare docs/components.tsv with the latest releases of the
+# components we run or follow, and open an issue when one is newer.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare versions
+        id: cmp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          sh scripts/check-upstream.sh | tee /tmp/upstream.txt
+          echo "newer=$(grep -c '^NEWER' /tmp/upstream.txt)" >> "$GITHUB_OUTPUT"
+      - name: Open an issue
+        if: steps.cmp.outputs.newer != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Component updates available" \
+            --body "$(printf 'See docs/COMPONENTS.md for the update procedure.\n\n```\n%s\n```\n' "$(cat /tmp/upstream.txt)")"

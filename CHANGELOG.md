@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9
+
+### Внешние компоненты / External components
+- docs/COMPONENTS.md: step-by-step review of sing-box (1.13/1.14 changes), zapret/zapret2, ByeDPI and Xray formats: what changed, what affects the project, how updates are made.
+- `docs/components.tsv` + `scripts/check-upstream.sh` compare the tested versions with the latest releases; weekly workflow `Upstream` opens an issue when a component is newer.
+- The service warns in the journal when the installed sing-box is newer than the tested one (`untested_newer` in `status`).
+
 ## 1.0.8
 
 ### Приложение HydraVPN и удалённое управление / App integration

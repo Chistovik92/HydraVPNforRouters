@@ -1,0 +1,6 @@
+# name	repo	tested_version	role
+sing-box	SagerNet/sing-box	1.14.2	proxy core (required, >= 1.12.0)
+zapret	bol-van/zapret	72.13	nfqws DPI desync (optional provider)
+zapret2	bol-van/zapret2	1.0.5.2	nfqws2 DPI desync (optional provider)
+byedpi	hufrea/byedpi	0.17.3	ciadpi SOCKS DPI bypass (optional provider)
+xray-core	XTLS/Xray-core	26.3.27	not run by the service; node formats (vless/reality/xhttp) are followed
