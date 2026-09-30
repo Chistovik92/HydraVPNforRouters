@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1
+
+Fixes from testing the router together with the HydraVPN app.
+
+- **API lock-out:** wrong tokens from one address locked out the right token from the same address (429). Now only wrong tokens are slowed down (delay grows to 5 s, at most 4 waiting at once); a correct token is never throttled. `api_token` shorter than 16 characters is refused.
+- **`?token=`** was accepted on every path; now only on the log stream (`/api/v1/logs/stream`).
+- **Stop left sing-box running.** On Windows `stop` has to kill the service, which orphaned its children; children are now tied to the service (job object). On Linux a helper left over from a killed service (SIGKILL, crash) is recognised by its PID file (`<cache dir>/singbox.pid`, checked against `/proc/<pid>/cmdline`) and stopped at the next start. Waiting for a process that survives SIGKILL is bounded (5 s).
+- **Reload hangs:** `status` and `config` no longer wait for the engine lock (they returned nothing while a reload was stopping sing-box); the last snapshot is returned with `"busy": true`. Reload and configuration changes through the API answer within 25 s (`202 applying` after that) while the work continues in the background.
+
 ## 1.2.0
 
 ### Проверка роутера / Router verification

@@ -2,6 +2,7 @@ package mgmt
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/logx"
@@ -17,6 +19,7 @@ import (
 type fakeEngine struct {
 	cfg     *config.Config
 	reloads int
+	block   chan struct{} // if set, Reload waits for it
 }
 
 func (f *fakeEngine) GetStatus() map[string]interface{} {
@@ -24,6 +27,9 @@ func (f *fakeEngine) GetStatus() map[string]interface{} {
 }
 func (f *fakeEngine) GetConfig() *config.Config { return f.cfg }
 func (f *fakeEngine) Reload(c *config.Config) error {
+	if f.block != nil {
+		<-f.block
+	}
 	f.cfg = c
 	f.reloads++
 	return nil
@@ -93,13 +99,77 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
-func TestBruteForceIsLimited(t *testing.T) {
+func TestWrongTokensNeverLockOutTheRightOne(t *testing.T) {
 	ts, _, _, token := setup(t)
-	for i := 0; i < 10; i++ {
-		call(t, ts, "bad", "GET", "/api/v1/status", nil)
+	// Many wrong guesses from the same address (all test requests share one).
+	for i := 0; i < 12; i++ {
+		go statusOf(ts, "bad")
 	}
-	if code, _ := call(t, ts, token, "GET", "/api/v1/status", nil); code != 429 {
-		t.Errorf("after 10 failures: %d, want 429", code)
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	if code, _ := call(t, ts, token, "GET", "/api/v1/status", nil); code != 200 {
+		t.Errorf("valid token rejected while wrong ones are being tried: %d", code)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("valid token was delayed: %v", time.Since(start))
+	}
+}
+
+func TestWrongTokensAreSlowedAndCapped(t *testing.T) {
+	ts, _, _, _ := setup(t)
+	// The fifth parallel wrong attempt is refused at once instead of waiting.
+	codes := make(chan int, 8)
+	for i := 0; i < 8; i++ {
+		go func() { codes <- statusOf(ts, "bad") }()
+	}
+	got429 := 0
+	timeout := time.After(15 * time.Second)
+	for i := 0; i < 8; i++ {
+		select {
+		case c := <-codes:
+			if c == 429 {
+				got429++
+			} else if c != 401 {
+				t.Errorf("unexpected status %d", c)
+			}
+		case <-timeout:
+			t.Fatal("requests hung")
+		}
+	}
+	if got429 == 0 {
+		t.Error("no request was refused although more than the parallel limit was in flight")
+	}
+}
+
+func TestQueryTokenOnlyOnStream(t *testing.T) {
+	ts, _, _, token := setup(t)
+	resp, err := http.Get(ts.URL + "/api/v1/status?token=" + token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("?token= accepted on a normal path: %d", resp.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/logs/stream?token="+token, nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream with ?token= must be accepted: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("stream: %d", resp.StatusCode)
+	}
+}
+
+func TestShortConfiguredTokenIsRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Settings.APIListen = "127.0.0.1:0"
+	cfg.Settings.APIToken = "short"
+	if _, err := New(Options{Engine: &fakeEngine{cfg: cfg}, RuntimeDir: t.TempDir()}); err == nil {
+		t.Error("a 5-character token must be refused")
 	}
 }
 
@@ -212,5 +282,45 @@ func TestPairURI(t *testing.T) {
 	u, err := PairURI(s, "192.168.1.1", "tok")
 	if err != nil || u != "hydravpn-router://192.168.1.1:8088?tls=0&token=tok" {
 		t.Errorf("uri: %q %v", u, err)
+	}
+}
+
+// statusOf is safe to call from goroutines (no testing.T).
+func statusOf(ts *httptest.Server, token string) int {
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return -1
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestSlowReloadDoesNotHangTheRequest(t *testing.T) {
+	old := applyTimeout
+	applyTimeout = 200 * time.Millisecond
+	defer func() { applyTimeout = old }()
+
+	ts, eng, cfgFile, token := setup(t)
+	eng.block = make(chan struct{})
+	defer close(eng.block)
+
+	start := time.Now()
+	code, body := call(t, ts, token, "POST", "/api/v1/subscriptions", map[string]string{"section": "main", "url": "https://x.example/s"})
+	if code != 202 || !strings.Contains(body, "applying") {
+		t.Errorf("slow apply: %d %s", code, body)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("request hung for %v", time.Since(start))
+	}
+	// The change is saved even though it is still being applied.
+	saved, _ := config.LoadFromFile(cfgFile)
+	if len(saved.SubscriptionURLs) != 1 {
+		t.Error("change not saved")
+	}
+	// The status endpoint stays available meanwhile.
+	if code, _ := call(t, ts, token, "GET", "/api/v1/status", nil); code != 200 {
+		t.Errorf("status while applying: %d", code)
 	}
 }

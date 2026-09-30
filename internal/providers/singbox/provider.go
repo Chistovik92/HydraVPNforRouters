@@ -33,6 +33,7 @@ type Provider struct {
 // and the legacy "dns"/"block" outbounds are not used.
 type Config struct {
 	BinaryPath   string
+	PidFile      string // child PID, used to stop a leftover after a killed daemon
 	ConfigPath   string
 	ConfigDir    string
 	LogLevel     string
@@ -129,7 +130,7 @@ func NewProvider(opts Options) *Provider {
 		config: withDefaults(opts.Config),
 		onLog:  opts.OnLog,
 	}
-	p.proc = &process.Supervisor{Name: "singbox", RespawnDelay: 5 * time.Second, OnLog: opts.OnLog}
+	p.proc = &process.Supervisor{Name: "singbox", RespawnDelay: 5 * time.Second, OnLog: opts.OnLog, PidFile: p.config.PidFile}
 	return p
 }
 

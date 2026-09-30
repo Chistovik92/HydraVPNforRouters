@@ -5,6 +5,9 @@ package process
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -26,4 +29,18 @@ func killGroup(p *os.Process) error {
 
 func hangup(p *os.Process) error {
 	return p.Signal(syscall.SIGHUP)
+}
+
+// sameProgram reports whether pid is alive and runs the given binary. It is
+// conservative: without /proc it says no, so a reused PID is never killed.
+func sameProgram(pid int, bin string) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	first := strings.SplitN(string(data), "\x00", 2)[0]
+	return filepath.Base(first) == filepath.Base(bin)
 }

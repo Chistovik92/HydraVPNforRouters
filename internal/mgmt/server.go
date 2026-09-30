@@ -62,8 +62,9 @@ type Server struct {
 
 	cfgMu sync.Mutex // serializes read-modify-write of the config file
 
-	failMu sync.Mutex
-	fails  map[string][]time.Time
+	failMu  sync.Mutex
+	fails   map[string][]time.Time
+	waiting map[string]int
 }
 
 // New builds a Server from the settings. It returns nil if api_listen is empty.
@@ -75,7 +76,10 @@ func New(o Options) (*Server, error) {
 	if o.Clash == nil {
 		o.Clash = NewClashClient(config.ClashAPIAddress)
 	}
-	srv := &Server{opts: o, fails: map[string][]time.Time{}}
+	srv := &Server{opts: o, fails: map[string][]time.Time{}, waiting: map[string]int{}}
+	if s.APIToken != "" && len(s.APIToken) < 16 {
+		return nil, fmt.Errorf("api_token must be at least 16 characters (leave it empty to generate one)")
+	}
 	tok, err := resolveToken(s.APIToken, o.RuntimeDir)
 	if err != nil {
 		return nil, err
@@ -191,15 +195,11 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.blocked(host) {
-			http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
-			return
-		}
+		// A valid token is never throttled: another device in the LAN that
+		// guesses wrong tokens must not lock the app out. Wrong tokens are
+		// slowed down instead (see rejectBadToken).
 		if !s.authorized(r) {
-			s.fail(host)
-			s.log("warn", "denied %s %s %s: bad token", host, r.Method, r.URL.Path)
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			s.rejectBadToken(w, r, host)
 			return
 		}
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
@@ -233,22 +233,47 @@ func (s *Server) allowed(ip net.IP) bool {
 	return false
 }
 
+// streamPath is the only path that accepts the token in the query string:
+// EventSource cannot set headers. Elsewhere a URL token would end up in logs
+// and browser history.
+const streamPath = "/api/v1/logs/stream"
+
 func (s *Server) authorized(r *http.Request) bool {
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if got == "" {
-		got = r.URL.Query().Get("token") // EventSource cannot set headers
+	if got == "" && r.URL.Path == streamPath {
+		got = r.URL.Query().Get("token")
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
-func (s *Server) fail(host string) {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	s.fails[host] = append(s.fails[host], time.Now())
+const (
+	maxDelay        = 5 * time.Second
+	maxParallelFail = 4
+)
+
+// rejectBadToken answers a request with a wrong token. Each recent failure
+// from the address adds a second of delay (up to five) and only a few such
+// requests may wait at once, so guessing is slow without blocking anyone who
+// has the right token.
+func (s *Server) rejectBadToken(w http.ResponseWriter, r *http.Request, host string) {
+	delay, ok := s.enterFail(host)
+	s.log("warn", "denied %s %s %s: bad token", host, r.Method, r.URL.Path)
+	if !ok {
+		http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
+		return
+	}
+	defer s.leaveFail(host)
+	select {
+	case <-time.After(delay):
+	case <-r.Context().Done():
+	}
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
-// blocked allows 10 failures per minute per address.
-func (s *Server) blocked(host string) bool {
+// enterFail records a failure and returns the delay to apply; ok is false
+// when too many failed requests from this address are already waiting.
+func (s *Server) enterFail(host string) (delay time.Duration, ok bool) {
 	s.failMu.Lock()
 	defer s.failMu.Unlock()
 	cut := time.Now().Add(-time.Minute)
@@ -258,8 +283,24 @@ func (s *Server) blocked(host string) bool {
 			kept = append(kept, t)
 		}
 	}
+	if s.waiting[host] >= maxParallelFail {
+		s.fails[host] = kept
+		return 0, false
+	}
+	kept = append(kept, time.Now())
 	s.fails[host] = kept
-	return len(kept) >= 10
+	s.waiting[host]++
+	delay = time.Duration(len(kept)) * time.Second
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return delay, true
+}
+
+func (s *Server) leaveFail(host string) {
+	s.failMu.Lock()
+	s.waiting[host]--
+	s.failMu.Unlock()
 }
 
 func (s *Server) log(level, format string, args ...interface{}) {
@@ -353,7 +394,41 @@ func (s *Server) mutate(fn func(*config.Config) error) error {
 	if err := cfg.SaveToFile(s.opts.ConfigFile); err != nil {
 		return err
 	}
-	return s.opts.Engine.Reload(cfg)
+	return s.apply(cfg)
+}
+
+// applyTimeout bounds how long a request waits for the service to apply a
+// change; applying stops child processes and can take a while.
+var applyTimeout = 25 * time.Second
+
+// errApplying means the change is saved and still being applied.
+var errApplying = errors.New("still applying")
+
+// apply reloads the service but never holds the HTTP request longer than
+// applyTimeout. The reload keeps running in the background.
+func (s *Server) apply(cfg *config.Config) error {
+	done := make(chan error, 1)
+	go func() { done <- s.opts.Engine.Reload(cfg) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(applyTimeout):
+		s.log("warn", "applying the configuration takes longer than %s; continuing in the background", applyTimeout)
+		return errApplying
+	}
+}
+
+// done answers a state-changing request: 202 if the change is saved but
+// still being applied, an error status on failure, ok otherwise.
+func (s *Server) done(w http.ResponseWriter, err error, okCode int, status string) {
+	switch {
+	case err == nil:
+		writeJSON(w, okCode, map[string]string{"status": status})
+	case errors.Is(err, errApplying):
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "applying"})
+	default:
+		writeErr(w, 400, err)
+	}
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
@@ -362,11 +437,14 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if err := s.opts.Engine.Reload(cfg); err != nil {
+	switch err := s.apply(cfg); {
+	case errors.Is(err, errApplying):
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "applying"})
+	case err != nil:
 		writeErr(w, 500, err)
-		return
+	default:
+		writeJSON(w, 200, map[string]string{"status": "reloaded"})
 	}
-	writeJSON(w, 200, map[string]string{"status": "reloaded"})
 }
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -400,11 +478,7 @@ func (s *Server) handleSectionsAdd(w http.ResponseWriter, r *http.Request) {
 		c.Sections = append(c.Sections, sec)
 		return nil
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 201, map[string]string{"status": "added"})
+	s.done(w, err, 201, "added")
 }
 
 func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
@@ -424,11 +498,7 @@ func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
 		}
 		return errors.New("no such section")
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 200, map[string]string{"status": "updated"})
+	s.done(w, err, 200, "updated")
 }
 
 func (s *Server) handleSectionsDelete(w http.ResponseWriter, r *http.Request) {
@@ -442,11 +512,7 @@ func (s *Server) handleSectionsDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		return errors.New("no such section")
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	s.done(w, err, 200, "deleted")
 }
 
 // ---------------------------------------------------------------- logs
@@ -528,11 +594,7 @@ func (s *Server) handleSubsAdd(w http.ResponseWriter, r *http.Request) {
 		c.SubscriptionURLs = append(c.SubscriptionURLs, sub)
 		return nil
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 201, map[string]string{"status": "added"})
+	s.done(w, err, 201, "added")
 }
 
 func (s *Server) handleSubsDelete(w http.ResponseWriter, r *http.Request) {
@@ -548,11 +610,7 @@ func (s *Server) handleSubsDelete(w http.ResponseWriter, r *http.Request) {
 		c.SubscriptionURLs = append(c.SubscriptionURLs[:idx], c.SubscriptionURLs[idx+1:]...)
 		return nil
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	s.done(w, err, 200, "deleted")
 }
 
 func (s *Server) handleSubsRefresh(w http.ResponseWriter, r *http.Request) {
@@ -595,11 +653,7 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		c.Servers = append(c.Servers, srv)
 		return nil
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 201, map[string]string{"status": "added"})
+	s.done(w, err, 201, "added")
 }
 
 func (s *Server) handleServersDelete(w http.ResponseWriter, r *http.Request) {
@@ -613,11 +667,7 @@ func (s *Server) handleServersDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		return errors.New("no such server")
 	})
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	s.done(w, err, 200, "deleted")
 }
 
 // ---------------------------------------------------------------- nodes

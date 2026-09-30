@@ -21,6 +21,7 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/firewall"
 	"github.com/Chistovik92/hydravpn-router/internal/logx"
 	"github.com/Chistovik92/hydravpn-router/internal/mgmt"
+	"github.com/Chistovik92/hydravpn-router/internal/process"
 	"github.com/Chistovik92/hydravpn-router/internal/selftest"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/alecthomas/kong"
@@ -66,6 +67,9 @@ func (c *StartCmd) Run(g *Globals) error {
 	}
 
 	newJournal(cfg.Settings)
+	if err := process.KillChildrenOnExit(); err != nil {
+		logLine("warn", "cannot tie child processes to this process: "+err.Error())
+	}
 	defer journal.Close()
 	if _, err := os.Stat(c.ConfigFile); os.IsNotExist(err) {
 		logLine("warn", "Config "+c.ConfigFile+" not found, running with defaults (no sections: nothing is routed)")

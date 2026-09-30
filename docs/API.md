@@ -6,12 +6,14 @@ JSON over HTTP(S). Enable it with `settings.api_listen` (for example `192.168.1.
 
 - **Token.** Every `/api/v1/*` request needs `Authorization: Bearer <token>`. The token is `settings.api_token`, or, if empty, a random one generated on first start and stored in `<runtime-dir>/api-token` (mode 0600). Print it on the router with `hydravpn-router api-token`.
 - **Addresses.** Only loopback and private networks may connect. Change it with `settings.api_allow` (list of IPs/CIDRs).
-- **Brute force.** After 10 wrong tokens within a minute an address gets `429` for a minute.
+- **Wrong tokens** are slowed down, not blocked: each recent failure from an address adds a second of delay (up to five) and at most four such requests wait at once (more get `429`). A request with the **right token is never delayed or refused**, so another device in the LAN cannot lock the app out. A configured `api_token` must be at least 16 characters.
 - **TLS.** Set `api_tls_cert` and `api_tls_key` for HTTPS. Without TLS on a non-loopback address the service logs a warning: the token travels in clear text. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
 - **Audit.** Every request that changes state and every denied request is written to the journal (`[api] 192.168.1.20 POST /api/v1/subscriptions -> 201`). Tokens and subscription URLs never appear in it.
 - Secrets in responses (`/config`, `/subscriptions`, `/servers`) are masked.
 
 Errors: `{"error": "text"}` with a 4xx/5xx status.
+
+Changes that need the service to restart parts of itself (reload, subscription or section changes) answer within 25 seconds. If applying takes longer the change is already saved and the answer is `202 {"status":"applying"}`; the work continues in the background. `GET /api/v1/status` never waits for it: while the service is busy it returns the last snapshot with `"busy": true`.
 
 ## Endpoints
 
@@ -25,7 +27,7 @@ Errors: `{"error": "text"}` with a 4xx/5xx status.
 | GET/POST | `/api/v1/sections` | list / add sections |
 | PUT/DELETE | `/api/v1/sections/{name}` | replace / delete a section (a section used by a subscription cannot be deleted) |
 | GET | `/api/v1/logs?n=200&level=info` | last journal entries |
-| GET | `/api/v1/logs/stream` | server-sent events with new entries (`?token=` is accepted here, EventSource cannot send headers) |
+| GET | `/api/v1/logs/stream` | server-sent events with new entries (the only path that accepts `?token=`, because EventSource cannot send headers) |
 | GET | `/api/v1/subscriptions` | subscriptions (`index` identifies one) |
 | POST | `/api/v1/subscriptions` | add `{"section":"main","url":"https://…"}`; saved to the config, applied at once |
 | POST | `/api/v1/subscriptions/{index}/refresh` | fetch now |

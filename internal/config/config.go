@@ -463,6 +463,17 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// PidFile is where the PID of a helper process (sing-box, nfqws, ciadpi) is
+// recorded. It lives next to the runtime cache (tmpfs on routers), so it
+// disappears on reboot together with the processes it describes.
+func PidFile(c *Config, name string) string {
+	dir := DefaultCacheDir
+	if c != nil && c.Settings.CachePath != "" {
+		dir = filepath.Dir(c.Settings.CachePath)
+	}
+	return filepath.Join(dir, name+".pid")
+}
+
 // ProviderEnabled reports whether any enabled section uses the given provider.
 // Sections without an explicit provider use sing-box.
 func (c *Config) ProviderEnabled(p ProviderType) bool {

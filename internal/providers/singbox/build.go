@@ -91,6 +91,7 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 	b.c = &Config{
 		BinaryPath: cfg.Settings.SingBoxBinary,
 		ConfigPath: cfg.Settings.ConfigPath,
+		PidFile:    config.PidFile(cfg, "singbox"),
 		LogLevel:   cfg.Settings.LogLevel,
 		DNS:        &DNSConfig{Servers: []DNSServer{}},
 	}

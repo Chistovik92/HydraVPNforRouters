@@ -54,6 +54,7 @@ type Config struct {
 	Options      string // custom strategy, replaces the default one
 	RespawnDelay int
 	ProviderType string // "zapret" or "zapret2"
+	PidFile      string
 }
 
 // Options for creating a new provider
@@ -72,6 +73,7 @@ func NewProvider(opts Options) *Provider {
 			Name:         c.ProviderType,
 			RespawnDelay: time.Duration(c.RespawnDelay) * time.Second,
 			OnLog:        opts.OnLog,
+			PidFile:      c.PidFile,
 		},
 	}
 }
@@ -109,6 +111,7 @@ func ConfigFromSettings(cfg *config.Config) *Config {
 	return withDefaults(&Config{
 		ProviderType: string(pt),
 		Options:      cfg.ProviderOptions(pt),
+		PidFile:      config.PidFile(cfg, string(pt)),
 	})
 }
 

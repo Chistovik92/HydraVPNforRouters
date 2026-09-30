@@ -4,7 +4,11 @@ package process
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,6 +22,10 @@ type Supervisor struct {
 	Name         string
 	RespawnDelay time.Duration
 	OnLog        func(level, message string)
+	// PidFile, if set, records the child's PID. A child left over from a
+	// daemon that was killed (SIGKILL, crash, "stop" on Windows) is stopped
+	// before the next start instead of holding the ports.
+	PidFile string
 
 	mu           sync.Mutex
 	bin          string
@@ -57,6 +65,7 @@ func (s *Supervisor) startLocked(bin string, args []string) error {
 		return errors.New("binary path is empty")
 	}
 
+	s.reapStale(bin)
 	cmd := exec.Command(bin, args...)
 	// The child's output goes to the journal (same writer for both streams).
 	out := &lineWriter{emit: func(level, msg string) {
@@ -73,6 +82,7 @@ func (s *Supervisor) startLocked(bin string, args []string) error {
 	}
 
 	s.bin, s.args = bin, append([]string(nil), args...)
+	s.writePid(cmd.Process.Pid)
 	s.cmd = cmd
 	s.done = make(chan struct{})
 	s.startTime = time.Now()
@@ -105,7 +115,13 @@ func (s *Supervisor) Stop(timeout time.Duration) {
 	case <-time.After(timeout):
 		s.log("warn", "did not exit in %s, killing", timeout)
 		_ = killGroup(cmd.Process)
-		<-done
+		// Never wait forever: a process that cannot be killed must not
+		// freeze Stop, Reload and the API behind it.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			s.log("error", "process %d did not die after kill; giving up", cmd.Process.Pid)
+		}
 	}
 	s.log("info", "stopped")
 }
@@ -156,6 +172,9 @@ func (s *Supervisor) monitor(cmd *exec.Cmd, done chan struct{}) {
 	s.mu.Lock()
 	if s.cmd == cmd {
 		s.cmd = nil
+		if s.PidFile != "" {
+			os.Remove(s.PidFile)
+		}
 	}
 	stopping := s.stopping
 	if err != nil && !stopping {
@@ -187,6 +206,42 @@ func (s *Supervisor) respawn() {
 	if err := s.startLocked(s.bin, s.args); err != nil {
 		s.log("error", "respawn failed: %v", err)
 		s.respawnTimer = time.AfterFunc(s.RespawnDelay, s.respawn)
+	}
+}
+
+func (s *Supervisor) writePid(pid int) {
+	if s.PidFile == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.PidFile), 0755); err == nil {
+		_ = os.WriteFile(s.PidFile, []byte(strconv.Itoa(pid)+"\n"), 0644)
+	}
+}
+
+// reapStale stops a child of a previous daemon that is still running.
+func (s *Supervisor) reapStale(bin string) {
+	if s.PidFile == "" {
+		return
+	}
+	data, err := os.ReadFile(s.PidFile)
+	if err != nil {
+		return
+	}
+	os.Remove(s.PidFile)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return
+	}
+	if !sameProgram(pid, bin) {
+		return
+	}
+	s.log("warn", "stopping leftover process %d from a previous run", pid)
+	if p, err := os.FindProcess(pid); err == nil {
+		_ = terminate(p)
+		time.Sleep(500 * time.Millisecond)
+		if sameProgram(pid, bin) {
+			_ = killGroup(p)
+		}
 	}
 }
 

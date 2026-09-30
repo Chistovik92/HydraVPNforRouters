@@ -33,6 +33,7 @@ type Config struct {
 	Port          int
 	RespawnDelay  int
 	CmdOptions    string
+	PidFile       string
 }
 
 // Options for creating a new provider
@@ -51,6 +52,7 @@ func NewProvider(opts Options) *Provider {
 			Name:         "byedpi",
 			RespawnDelay: time.Duration(c.RespawnDelay) * time.Second,
 			OnLog:        opts.OnLog,
+			PidFile:      c.PidFile,
 		},
 	}
 }
@@ -79,7 +81,7 @@ func withDefaults(c *Config) *Config {
 
 // ConfigFromSettings creates ByeDPI config from the HydraVPN config
 func ConfigFromSettings(cfg *config.Config) *Config {
-	return withDefaults(&Config{CmdOptions: cfg.ProviderOptions(config.ProviderTypeByeDPI)})
+	return withDefaults(&Config{CmdOptions: cfg.ProviderOptions(config.ProviderTypeByeDPI), PidFile: config.PidFile(cfg, "byedpi")})
 }
 
 // Start starts ByeDPI

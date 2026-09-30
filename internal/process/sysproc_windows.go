@@ -22,3 +22,7 @@ func killGroup(p *os.Process) error {
 func hangup(p *os.Process) error {
 	return errors.New("reload signal is not supported on Windows")
 }
+
+// sameProgram: Windows children are cleaned up by the job object (see
+// KillChildrenOnExit), so there are no leftovers to identify by PID.
+func sameProgram(pid int, bin string) bool { return false }

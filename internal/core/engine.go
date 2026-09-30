@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/components"
@@ -39,8 +40,15 @@ type Engine struct {
 	config  *config.Config
 	state   EngineState
 	stateMu sync.RWMutex
-	ctx     context.Context
-	cancel  context.CancelFunc
+
+	// Read-mostly views that never wait for e.mu: Start, Stop and Reload can
+	// take many seconds (they wait for child processes) and status, config
+	// and the management API must stay responsive meanwhile.
+	cfgView    atomic.Pointer[config.Config]
+	statusMu   sync.Mutex
+	lastStatus map[string]interface{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	// Providers
 	singboxProvider *singbox.Provider
@@ -92,6 +100,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	if e.config == nil {
 		e.config = config.DefaultConfig()
 	}
+	e.cfgView.Store(e.config)
 
 	e.dnsManager = dns.NewManager(dns.Options{Config: e.config, OnLog: e.log})
 	e.firewallManager = firewall.NewManager(firewall.Options{Config: e.config, OnLog: e.log})
@@ -319,6 +328,7 @@ func (e *Engine) Reload(newConfig *config.Config) error {
 
 	e.log("info", "Reloading configuration")
 	e.config = newConfig
+	e.cfgView.Store(newConfig)
 	running := e.GetState() == EngineStateRunning
 
 	var firstErr error
@@ -361,9 +371,21 @@ func (e *Engine) GetState() EngineState {
 	return e.state
 }
 
-// GetStatus returns detailed status information
+// GetStatus returns detailed status information. While a start, stop or
+// reload holds the engine lock it returns the last snapshot marked "busy"
+// instead of waiting.
 func (e *Engine) GetStatus() map[string]interface{} {
-	e.mu.RLock()
+	if !e.mu.TryRLock() {
+		e.statusMu.Lock()
+		defer e.statusMu.Unlock()
+		out := map[string]interface{}{"state": e.GetState(), "version": version.Version}
+		for k, v := range e.lastStatus {
+			out[k] = v
+		}
+		out["state"] = e.GetState()
+		out["busy"] = true
+		return out
+	}
 	defer e.mu.RUnlock()
 
 	status := map[string]interface{}{
@@ -389,15 +411,19 @@ func (e *Engine) GetStatus() map[string]interface{} {
 	status["lists"] = e.listsMgr.GetStatus()
 	status["components"] = e.comps.GetStatus()
 
+	// Callers add fields to the returned map; keep a private copy.
+	snapshot := make(map[string]interface{}, len(status))
+	for k, v := range status {
+		snapshot[k] = v
+	}
+	e.statusMu.Lock()
+	e.lastStatus = snapshot
+	e.statusMu.Unlock()
 	return status
 }
 
-// GetConfig returns the current configuration
-func (e *Engine) GetConfig() *config.Config {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.config
-}
+// GetConfig returns the current configuration without waiting for the lock.
+func (e *Engine) GetConfig() *config.Config { return e.cfgView.Load() }
 
 func (e *Engine) setState(state EngineState) {
 	e.stateMu.Lock()
