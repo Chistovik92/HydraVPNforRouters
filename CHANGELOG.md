@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.3
 
 - **Radar bot account.** The router can sign in to a person's account in the Radar bot (bot API for apps, bot 5.9.1) with a one-time code and add the subscriptions issued there: `hydravpn-router radar link|sync|status|unlink` and `GET/POST/DELETE /api/v1/radar…` (see docs/API.md). The device token lives in `radar.json` next to the config file (0600, survives reboots); https only (http for private networks), redirects are not followed; a linked router syncs a minute after start and then every 12 h; read-only — access is issued and revoked in the bot. Not verified against a live bot: the tests use an emulator of its API.
 
