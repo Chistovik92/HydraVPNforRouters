@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Debug pre-releases (`vX.Y.Z-debug.N`): `install.sh` compares versions with the suffix (a pre-release is older than its release, `--version 1.2.2-debug.1` works); such builds force `log_level`/`app_log_level` to `debug` and serve pprof on `127.0.0.1:6060`. `hydravpn-router version` prints `X.Y.Z (commit)`.
+
 ## 1.2.1
 
 Fixes from testing the router together with the HydraVPN app.

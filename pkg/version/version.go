@@ -5,6 +5,8 @@
 // Release builds may override the values with -ldflags "-X ...".
 package version
 
+import "strings"
+
 var (
 	Version   = "1.2.1"
 	Commit    = "dev"
@@ -13,12 +15,17 @@ var (
 	GoVersion = "unknown"
 )
 
-// FullVersion returns the version with the commit suffix.
+// FullVersion returns the version followed by the commit in parentheses.
 func FullVersion() string {
-	return Version + "-" + Commit
+	return Version + " (" + Commit + ")"
 }
 
 // UserAgent returns the HTTP User-Agent used for outgoing requests.
 func UserAgent() string {
 	return "HydraVPNRouter/" + Version
+}
+
+// IsDebug reports whether this is a debug pre-release build (vX.Y.Z-debug.N).
+func IsDebug() bool {
+	return strings.Contains(Version, "-debug")
 }
