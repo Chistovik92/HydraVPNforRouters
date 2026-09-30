@@ -139,6 +139,10 @@ detect_platform() {
         PLATFORM="openwrt"
     elif [ -x /opt/bin/opkg ] && [ -d /opt/etc ]; then
         PLATFORM="keenetic-entware"
+    elif command -v ndmc >/dev/null 2>&1 || [ -d /etc/ndm ]; then
+        # KeeneticOS: the system partition is read-only, everything lives in
+        # the OPKG storage (USB drive or the built-in memory) mounted at /opt.
+        die "KeeneticOS detected, but Entware (OPKG) is not installed. Enable the OPKG component and choose a storage (USB drive or built-in memory) in the router web UI, install Entware, then run this script again. See INSTALL.md."
     elif [ "$(uname -s)" = "Linux" ]; then
         PLATFORM="linux"
     else

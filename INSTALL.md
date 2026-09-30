@@ -55,6 +55,25 @@ wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/
 | Keenetic (Entware) | `/opt/bin/hydravpn-router` | `/opt/etc/hydravpn-router/config.yaml` | `/opt/etc/init.d/S99hydravpn-router` |
 | Linux | `/usr/local/bin/hydravpn-router` | `/etc/hydravpn-router/config.yaml` | `hydravpn-router.service` |
 
+### KeeneticOS: Entware на флешке или во встроенной памяти
+
+Сам KeeneticOS закрыт: ставить можно только в хранилище OPKG (`/opt`). Хранилище — это USB-накопитель **или** встроенная память (на моделях, где она поддерживается). Для программы разницы нет: путь всегда `/opt`, скрипт определяет платформу по `/opt/bin/opkg`.
+KeeneticOS is closed; software goes to the OPKG storage (`/opt`) on a USB drive **or** in the built-in memory (on models that support it). The program does not care: the path is always `/opt`.
+
+1. В веб-интерфейсе роутера: «Общие настройки» → «Изменение набора компонентов» → включить «Пакеты OPKG» (и «Модули ядра для подсистемы Netfilter», если такой компонент есть на вашей модели).
+2. «Приложения» / «USB-накопители»: выбрать хранилище OPKG — флешку (ext4) или встроенную память — и установить Entware по инструкции Keenetic.
+3. Подключиться по SSH (порт 222 для Entware, `root`) и выполнить установку:
+   ```bash
+   opkg update && opkg install ca-certificates curl
+   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
+   ```
+   Скрипт поставит `sing-box-go` из Entware, бинарник в `/opt/bin`, конфиг `/opt/etc/hydravpn-router/config.yaml` (LAN — `br0`) и сервис `/opt/etc/init.d/S99hydravpn-router`.
+
+Ограничения (не проверены на железе, см. [ROADMAP.md](ROADMAP.md)):
+- прозрачный перехват (`tproxy`) требует в ядре `nf_tables`/`nft_tproxy` или `xt_TPROXY`; если модуля нет в прошивке вашей модели, режим `singbox` работать не будет, а `zapret`/`byedpi` — по своим требованиям;
+- NDM пересобирает правила Netfilter при смене состояния сети; для устойчивости нужен хук в `/opt/etc/ndm/netfilter.d/` (запланирован);
+- на встроенной памяти мало места: используйте `log_level: warn` и не включайте лишние списки.
+
 ### OpenWRT: пакет .ipk / .ipk package
 
 Пакет собирается командой `make build-openwrt` (Docker) под архитектуры OpenWRT (`x86_64`, `aarch64_generic`, `aarch64_cortex-a53`, `arm_cortex-a7_neon-vfpv4`, `arm_cortex-a9`, `mipsel_24kc`, `mips_24kc`):
@@ -82,6 +101,8 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. Use the contain
    /container add file=disk1/hydravpn-router.tar interface=veth-hydravpn mounts=hydravpn-config root-dir=disk1/hydravpn logging=yes
    /container start [find tag~"hydravpn"]
    ```
+
+Ограничения MikroTik (не проверены на железе): контейнеры доступны на RouterOS 7.6+ с пакетом `container` и только на ARM/ARM64/x86 (не на MIPS-моделях). Контейнер работает в своей сети (`veth`), поэтому LAN-трафик нужно направить в него на стороне RouterOS (маркировка в `/ip firewall mangle` и маршрут через `172.17.0.2`), а в конфиге задать `source_network_interfaces: ["eth0"]` (интерфейс контейнера). Автоматической настройки RouterOS пока нет.
 
 Если образ опубликован в реестре (`make docker-build && docker push ...`), вместо `file=` укажите `remote-image=`.
 

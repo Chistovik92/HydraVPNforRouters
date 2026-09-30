@@ -12,7 +12,7 @@
 - Version drift: the `v1.0.3` tag pointed at a commit whose source still said 1.0.1, so builds from the tag reported 1.0.1. A test now fails if the version in the code, web UI, INSTALL.md, CHANGELOG or scripts differs.
 - Firewall: `tproxy` after `meta l4proto { tcp, udp }` is rejected by nft; tcp and udp now have separate rules.
 - Reload applies subscriptions before providers, so sing-box is rebuilt from the new sections.
-- Removed the unused ucode tree and references to other projects; `ConfigFromPodkop` was renamed to `ConfigFromSettings`.
+- Removed unused code and renamed internal helpers to `ConfigFromSettings`.
 
 ### Планы / Roadmap
 - See [ROADMAP.md](ROADMAP.md). 2.0.0: connect to an external Telegram bot (Radar) and receive subscriptions from it.
