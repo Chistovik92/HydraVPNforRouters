@@ -57,10 +57,16 @@ for target in "${TARGETS[@]}"; do
 
     (cd "$ROOT_DIR" && env "${env_vars[@]}" go build \
         -trimpath \
+        -buildvcs=false \
         -tags "$BUILD_TAGS" \
         -ldflags "$LDFLAGS" \
         -o "$OUTPUT_DIR/$output_name" \
         ./cmd/hydravpn-router)
+
+    # Optional: UPX=1 compresses Linux binaries (smaller on flash, slightly more RAM at start).
+    if [ "${UPX:-0}" = "1" ] && command -v upx >/dev/null 2>&1 && [ "$goos" = "linux" ]; then
+        upx --best --lzma -q "$OUTPUT_DIR/$output_name" >/dev/null || true
+    fi
 
     # "sha256sum" on Windows prints "*name" (binary mode); keep the plain form.
     (cd "$OUTPUT_DIR" && sha256sum "$output_name" | sed 's/ \*/  /' >> checksums.txt)

@@ -29,7 +29,7 @@ all: build
 
 # Build for current platform
 build:
-	go build -trimpath -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o hydravpn-router ./cmd/hydravpn-router
+	go build -trimpath -buildvcs=false -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o hydravpn-router ./cmd/hydravpn-router
 
 # Build release binaries for all platforms
 build-all:
