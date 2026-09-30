@@ -41,9 +41,13 @@ func ConfigFromSettings(cfg *config.Config, nodes NodeSource, opts ...Option) *C
 	}
 	// Fallback chain: without inbound servers/endpoints (they may need a
 	// sing-box build with extra features), then without any sections.
+	// The reduced configs are built lazily: they are rarely needed and a
+	// large subscription is expensive to render.
 	c := build(cfg, nodes, o, true, true)
-	c.Fallback = build(cfg, nodes, o, true, false)
-	c.Fallback.Fallback = build(cfg, nil, o, false, false)
+	c.fallbacks = []func() *Config{
+		func() *Config { return build(cfg, nodes, o, true, false) },
+		func() *Config { return build(cfg, nil, o, false, false) },
+	}
 	return c
 }
 
@@ -67,6 +71,7 @@ type builder struct {
 	c     *Config
 
 	used     map[string]bool   // outbound tags in use
+	suffix   map[string]int    // next numeric suffix per base tag
 	groups   map[string]string // section -> its outbound tag
 	ruleSets map[string]string // url -> rule-set tag
 	detours  map[string]string // node tag -> detour section
@@ -78,6 +83,7 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 		nodes:    nodes,
 		lists:    o.lists,
 		used:     map[string]bool{directTag: true},
+		suffix:   map[string]int{},
 		groups:   map[string]string{},
 		ruleSets: map[string]string{},
 		detours:  map[string]string{},
@@ -165,7 +171,16 @@ func (b *builder) uniqueTag(base string) string {
 		base = "node"
 	}
 	tag := base
-	for i := 2; b.used[tag]; i++ {
+	if b.used[tag] {
+		// Remember where the numbering stopped: identical names in a large
+		// subscription would otherwise make this quadratic.
+		i := b.suffix[base]
+		if i < 2 {
+			i = 2
+		}
+		for ; b.used[base+" "+strconv.Itoa(i)]; i++ {
+		}
+		b.suffix[base] = i + 1
 		tag = base + " " + strconv.Itoa(i)
 	}
 	b.used[tag] = true

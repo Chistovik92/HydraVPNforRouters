@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0
+
+### Оптимизация / Optimization (no behavior change)
+- Building the sing-box config for a large subscription (5000 nodes with identical names, a list of 100 000 domains) took 1.8 s and 440 MB; it now takes 21 ms and 17 MB (quadratic tag numbering removed, reduced fallback configs built only when needed, large configs rendered compact). This mattered on routers with 128 MB RAM.
+- `-buildvcs=false` in all builds; `UPX=1 scripts/build.sh` optionally compresses Linux binaries.
+- Unused dependency (`gorilla/websocket`) dropped; `govulncheck` reports no vulnerabilities. Two indirect modules (`x/net`, `x/sys`) stay on their previous versions because their newer releases require Go 1.26.
+
+### Обновление компонентов / Component versions (no code change)
+- Container image pins sing-box **v1.14.2** (was `latest`); docs/components.tsv and the tested version (1.14) match. Xray is not run by the service: its version is tracked for the link formats only (see docs/COMPONENTS.md).
+
 ## 1.0.9
 
 ### Внешние компоненты / External components

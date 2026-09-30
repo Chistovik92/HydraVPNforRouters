@@ -1,6 +1,7 @@
 package singbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,10 +46,10 @@ type Config struct {
 	// Warnings lists things that were skipped while building the config
 	// (unsupported nodes, rules without matchers, missing lists).
 	Warnings []string
-	// Fallback is a minimal config without user sections. It is used when
-	// the full config is rejected by "sing-box check", so a broken
-	// subscription node cannot take the router offline.
-	Fallback *Config
+	// fallbacks build reduced configs (without inbound servers, then
+	// without sections). They are used when the full config is rejected by
+	// "sing-box check", so a broken node cannot take the router offline.
+	fallbacks []func() *Config
 }
 
 // Inbound, Outbound and Rule are sing-box JSON objects.
@@ -241,7 +242,15 @@ func (c *Config) Render() ([]byte, error) {
 	if c.Experimental != nil {
 		full["experimental"] = c.Experimental
 	}
-	return json.MarshalIndent(full, "", "  ")
+	data, err := json.Marshal(full)
+	if err != nil || len(data) > 256<<10 {
+		return data, err // large configs stay compact: memory matters more
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, data, "", "  "); err != nil {
+		return data, nil
+	}
+	return out.Bytes(), nil
 }
 
 // checkConfig validates a config file with "sing-box check". It is a
@@ -273,10 +282,9 @@ func (p *Provider) writeConfig() error {
 		return nil
 	}
 	err := first
-	for fb := p.config.Fallback; fb != nil; fb = fb.Fallback {
+	for _, build := range p.config.fallbacks {
 		p.log("error", "config rejected, trying a reduced config: %v", err)
-		fbc := withDefaults(fb)
-		if err = p.writeChecked(fbc); err == nil {
+		if err = p.writeChecked(withDefaults(build())); err == nil {
 			return nil
 		}
 	}

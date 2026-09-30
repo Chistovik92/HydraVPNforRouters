@@ -22,7 +22,7 @@ RUN set -eu; \
     V="${V#v}"; \
     echo "$V" > /version; \
     CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOARM="$GOARM" GOMIPS="$GOMIPS" \
-    go build -trimpath -tags netgo,osusergo \
+    go build -trimpath -buildvcs=false -tags netgo,osusergo \
         -ldflags "-s -w -X github.com/Chistovik92/hydravpn-router/pkg/version.Version=$V" \
         -o /hydravpn-router ./cmd/hydravpn-router
 

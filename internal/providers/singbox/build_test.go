@@ -150,7 +150,7 @@ func TestSectionsProduceRoutingThroughProxy(t *testing.T) {
 	}
 
 	// The fallback config has no sections at all.
-	fb := render(t, c.Fallback.Fallback)
+	fb := render(t, c.fallbacks[1]())
 	if len(fb["outbounds"].([]interface{})) != 1 {
 		t.Errorf("fallback should only have direct-out: %v", fb["outbounds"])
 	}
@@ -322,8 +322,26 @@ func TestServersAndFallbackChain(t *testing.T) {
 		t.Errorf("mtproto must warn: %v", c.Warnings)
 	}
 	// The first fallback keeps sections but drops servers and endpoints.
-	fb := render(t, c.Fallback)
+	fb := render(t, c.fallbacks[0]())
 	if fb["endpoints"] != nil || len(fb["inbounds"].([]interface{})) != 3 {
 		t.Errorf("first fallback still has servers: %v", fb["inbounds"])
+	}
+}
+
+func TestManyIdenticalNamesGetUniqueTags(t *testing.T) {
+	b := &builder{used: map[string]bool{directTag: true}, suffix: map[string]int{}}
+	seen := map[string]bool{}
+	for i := 0; i < 3000; i++ {
+		tag := b.uniqueTag("Node")
+		if seen[tag] {
+			t.Fatalf("duplicate tag %q at %d", tag, i)
+		}
+		seen[tag] = true
+	}
+	// A name that collides with a generated suffix is still made unique.
+	b2 := &builder{used: map[string]bool{"Node 2": true}, suffix: map[string]int{}}
+	b2.used["Node"] = true
+	if tag := b2.uniqueTag("Node"); tag != "Node 3" {
+		t.Errorf("got %q", tag)
 	}
 }

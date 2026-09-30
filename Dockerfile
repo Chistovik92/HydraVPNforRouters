@@ -4,7 +4,7 @@
 #
 # Run with --network host --cap-add NET_ADMIN --cap-add NET_RAW.
 
-ARG SING_BOX_IMAGE=ghcr.io/sagernet/sing-box:latest
+ARG SING_BOX_IMAGE=ghcr.io/sagernet/sing-box:v1.14.2
 
 FROM golang:1.25-alpine AS build
 ARG VERSION=
@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 RUN set -eu; \
     V="${VERSION:-$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' pkg/version/version.go)}"; \
-    CGO_ENABLED=0 go build -trimpath -tags netgo,osusergo \
+    CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags netgo,osusergo \
         -ldflags "-s -w -X github.com/Chistovik92/hydravpn-router/pkg/version.Version=${V#v}" \
         -o /hydravpn-router ./cmd/hydravpn-router
 
