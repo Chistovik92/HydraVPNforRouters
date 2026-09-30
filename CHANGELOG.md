@@ -15,7 +15,7 @@
 - Removed the unused ucode tree and references to other projects; `ConfigFromPodkop` was renamed to `ConfigFromSettings`.
 
 ### Планы / Roadmap
-- 2.0.0: connect to an external Telegram bot (Radar) and receive subscriptions from it.
+- See [ROADMAP.md](ROADMAP.md). 2.0.0: connect to an external Telegram bot (Radar) and receive subscriptions from it.
 
 ## 1.0.3
 
