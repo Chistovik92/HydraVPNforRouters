@@ -166,3 +166,14 @@ func TestRadarDisconnectedInBotDropsTheLink(t *testing.T) {
 		t.Error("the dead token stays on disk")
 	}
 }
+
+func TestRadarStateLivesNextToConfig(t *testing.T) {
+	s := &Server{opts: Options{ConfigFile: filepath.Join("etc", "hydra", "config.yaml"), RuntimeDir: filepath.Join("run", "hydra")}}
+	if got, want := s.radarDir(), filepath.Join("etc", "hydra"); got != want {
+		t.Fatalf("radarDir = %q, want %q (runtime dir is tmpfs on OpenWrt)", got, want)
+	}
+	s.opts.ConfigFile = ""
+	if got := s.radarDir(); got != filepath.Join("run", "hydra") {
+		t.Fatalf("without a config file radarDir = %q", got)
+	}
+}

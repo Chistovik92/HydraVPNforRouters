@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
@@ -15,6 +16,10 @@ import (
 // from the bot. Access is issued in the bot, so a new subscription shows up
 // here without anyone touching the router.
 var radarSyncEvery = 12 * time.Hour
+
+// radarFirstSync is the delay before the first sync after the service starts
+// (gives the WAN time to come up after a router boot).
+var radarFirstSync = time.Minute
 
 // errRadarUnlinked means the bot no longer accepts this device: it was
 // disconnected there. The link is dropped; a new code is needed.
@@ -32,7 +37,7 @@ func (s *Server) radarSync(ctx context.Context, st *radar.State, section string)
 	subs, err := s.radarClient().Subscriptions(ctx, st.Server, st.Token)
 	if err != nil {
 		if radar.IsAuth(err) {
-			_ = radar.ClearState(s.opts.RuntimeDir)
+			_ = radar.ClearState(s.radarDir())
 			return radar.Result{}, errRadarUnlinked
 		}
 		return radar.Result{}, err
@@ -52,15 +57,18 @@ func (s *Server) radarSync(ctx context.Context, st *radar.State, section string)
 }
 
 func (s *Server) radarLoop(stop <-chan struct{}) {
+	first := time.NewTimer(radarFirstSync)
+	defer first.Stop()
 	ticker := time.NewTicker(radarSyncEvery)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-stop:
 			return
+		case <-first.C:
 		case <-ticker.C:
 		}
-		st, err := radar.LoadState(s.opts.RuntimeDir)
+		st, err := radar.LoadState(s.radarDir())
 		if err != nil || st == nil {
 			continue
 		}
@@ -77,7 +85,7 @@ func (s *Server) radarLoop(stop <-chan struct{}) {
 }
 
 func (s *Server) handleRadarStatus(w http.ResponseWriter, r *http.Request) {
-	st, err := radar.LoadState(s.opts.RuntimeDir)
+	st, err := radar.LoadState(s.radarDir())
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -123,7 +131,7 @@ func (s *Server) handleRadarLink(w http.ResponseWriter, r *http.Request) {
 	}
 	name, _ := s.radarClient().Username(ctx, server, token)
 	st := &radar.State{Server: server, Token: token, Username: name, Linked: time.Now().UTC()}
-	if err := radar.SaveState(s.opts.RuntimeDir, st); err != nil {
+	if err := radar.SaveState(s.radarDir(), st); err != nil {
 		// The device is linked in the bot but the token is lost: disconnect it there.
 		_ = s.radarClient().Logout(ctx, server, token)
 		writeErr(w, 500, err)
@@ -144,7 +152,7 @@ func (s *Server) handleRadarSync(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	st, err := radar.LoadState(s.opts.RuntimeDir)
+	st, err := radar.LoadState(s.radarDir())
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -158,7 +166,7 @@ func (s *Server) handleRadarSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRadarUnlink(w http.ResponseWriter, r *http.Request) {
-	st, err := radar.LoadState(s.opts.RuntimeDir)
+	st, err := radar.LoadState(s.radarDir())
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -168,7 +176,7 @@ func (s *Server) handleRadarUnlink(w http.ResponseWriter, r *http.Request) {
 		// and the person can disconnect it in the bot.
 		_ = s.radarClient().Logout(r.Context(), st.Server, st.Token)
 	}
-	if err := radar.ClearState(s.opts.RuntimeDir); err != nil {
+	if err := radar.ClearState(s.radarDir()); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -202,4 +210,15 @@ func radarStatus(err error) int {
 		}
 	}
 	return http.StatusBadGateway
+}
+
+// radarDir is where the bot link is kept: next to the config, which is on
+// persistent storage. The runtime dir is tmpfs on OpenWrt, so a token kept
+// there would vanish at every reboot and leave the device registered in the
+// bot with no way to use it.
+func (s *Server) radarDir() string {
+	if s.opts.ConfigFile != "" {
+		return filepath.Dir(s.opts.ConfigFile)
+	}
+	return s.opts.RuntimeDir
 }

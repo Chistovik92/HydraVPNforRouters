@@ -61,7 +61,7 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 The router can sign in to a person's account in the Radar bot and take the subscriptions issued to them (bot API for apps, bot 5.9.1; the contract is `docs/API_APPS.md` in github.com/Chistovik92/radar).
 
 1. In the bot: "VPN" → "Connect an app". The bot shows a one-time code (8 digits, 5 minutes).
-2. `POST /api/v1/radar/link` with the bot address and the code (or `hydravpn-router radar link`). The router exchanges the code for a device token and stores it in `<runtime-dir>/radar.json` (mode 0600). The token is never returned by the API and never logged.
+2. `POST /api/v1/radar/link` with the bot address and the code (or `hydravpn-router radar link`). The router exchanges the code for a device token and stores it in `radar.json` in the config directory (mode 0600; not in the runtime dir, which is tmpfs on OpenWrt and is emptied at reboot). The token is never returned by the API and never logged.
 3. Every working **subscription link** of the person is added to the section (`main`, else the first; `section` overrides) with automatic user agent and HWID and a 24 h refresh. Single keys (Outline) and config files (wg-easy) are skipped. A link already in the config, in any section, is not added twice.
 4. A linked router re-reads the bot every 12 hours. Subscriptions that disappeared from the bot are **not** removed from the config.
 5. If the device is disconnected in the bot, the next sync answers `409` and the link is dropped: a new code is needed.
