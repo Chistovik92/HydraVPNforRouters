@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.6
+
+### Сети и списки / Networking and lists
+- Plain `.lst` lists (`community_lists[].url`, `rule_sets`) are downloaded, cached next to the config and turned into inline sing-box rules; only `.srs`/`.json` were supported before. Lists update by `interval`.
+- IPv6: `enable_ipv6: true` intercepts IPv6 LAN traffic (nft `tproxy ip6`, `ip -6` policy routing, dual-stack tproxy inbound).
+- FakeIP: with `fakeip_enabled` (and not `dont_touch_dhcp`) dnsmasq on OpenWrt is pointed at the sing-box DNS inbound and restored on stop.
+- WAN monitoring (`enable_badwan_interface_monitoring`, `badwan_monitored_interfaces`, `badwan_reload_delay`): when a WAN comes back or changes address the firewall and sing-box are reloaded.
+- Component check (`component_update_check_*`): sing-box version is compared with the latest release and the supported minimum; result in `status` (`components`). Nothing is installed automatically.
+
+### Журнал и безопасность / Journal and safety
+- `app_log_level`, `log_file`, `log_max_size_mb`, `log_keep`: leveled journal with size rotation.
+- `hydravpn-router config` masks keys, tokens and subscription URLs (`--show-secrets` prints them).
+- Config saves are atomic and keep a `.bak`.
+- Tests for config, core, zapret, ByeDPI, lists, journal, WAN monitor.
+
+### CI и релизы / CI and releases
+- GitHub Actions: CI (vet for linux/windows, race tests, govulncheck, nft syntax check) and a release workflow that builds binaries, `.ipk` packages and the container image from a `vX.Y.Z` tag and refuses a tag that differs from `pkg/version`.
+- `scripts/bump-version.sh`, `scripts/check-version.sh`; LF line endings enforced (`.gitattributes`, `.editorconfig`).
+
 ## 1.0.5
 
 - `install.sh`: KeeneticOS without Entware is detected and the script stops with instructions (Keenetic is supported through Entware only, on a USB drive or in the built-in memory).

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet (linux)
+        run: go vet ./...
+      - name: Vet (windows)
+        run: GOOS=windows go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      - name: Vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: Build all targets
+        run: bash scripts/build.sh "" /tmp/dist
+
+  nft-syntax:
+    # Validates the generated nftables ruleset with the real nft binary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y nftables
+      - name: Render and check the ruleset
+        run: |
+          go run ./cmd/hydravpn-router selftest --print-nft --config configs/config.yaml > /tmp/rules.nft
+          sudo nft --check -f /tmp/rules.nft

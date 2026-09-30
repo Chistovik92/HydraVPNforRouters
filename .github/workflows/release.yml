@@ -1,0 +1,68 @@
+name: Release
+
+# Runs when a vX.Y.Z tag is pushed. The tag must match pkg/version/version.go,
+# so a tag can never publish a build that reports another version.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Tag matches the source version
+        run: sh scripts/check-version.sh "${GITHUB_REF_NAME}"
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Binaries
+        run: bash scripts/build.sh "${GITHUB_REF_NAME#v}" dist
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: OpenWrt packages (.ipk)
+        run: |
+          set -e
+          V="${GITHUB_REF_NAME#v}"
+          for t in \
+            "x86_64|amd64|" "aarch64_generic|arm64|" "aarch64_cortex-a53|arm64|" \
+            "arm_cortex-a7_neon-vfpv4|arm|7" "arm_cortex-a9|arm|7" \
+            "mipsel_24kc|mipsle|" "mips_24kc|mips|"; do
+            pkg=${t%%|*}; rest=${t#*|}; goarch=${rest%%|*}; goarm=${rest#*|}
+            docker buildx build -f build/openwrt/Dockerfile \
+              --build-arg VERSION="$V" --build-arg PKG_ARCH="$pkg" \
+              --build-arg GOARCH="$goarch" --build-arg GOARM="$goarm" \
+              --output type=local,dest=dist/openwrt .
+          done
+          cp dist/openwrt/*.ipk dist/
+          (cd dist && sha256sum *.ipk >> checksums.txt)
+
+      - name: Container image
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          IMAGE="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr A-Z a-z)/hydravpn-router"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
+            --build-arg VERSION="$V" -t "$IMAGE:$V" -t "$IMAGE:latest" --push .
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=""
+          case "${GITHUB_REF_NAME}" in *-*) FLAGS="--prerelease" ;; esac
+          gh release create "${GITHUB_REF_NAME}" $FLAGS \
+            --title "HydraVPN for Router ${GITHUB_REF_NAME#v}" \
+            --notes-file dist/RELEASE_NOTES.md \
+            dist/hydravpn-router-* dist/*.ipk dist/checksums.txt
