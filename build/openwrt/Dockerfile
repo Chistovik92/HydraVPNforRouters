@@ -8,7 +8,7 @@
 # (opkg print-architecture), GOARCH/GOARM/GOMIPS the matching Go target.
 # VERSION defaults to pkg/version/version.go.
 
-FROM golang:1.25-alpine AS build
+FROM golang:alpine AS build
 ARG VERSION=
 ARG GOARCH=amd64
 ARG GOARM=

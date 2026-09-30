@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
       - name: Format
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: Vet (linux)
@@ -38,9 +38,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
       - run: sudo apt-get update && sudo apt-get install -y nftables
       - name: Render and check the ruleset
         run: |
-          go run ./cmd/hydravpn-router selftest --print-nft --config configs/config.yaml > /tmp/rules.nft
+          go run ./cmd/hydravpn-router selftest --print-nft -c configs/config.yaml > /tmp/rules.nft
           sudo nft --check -f /tmp/rules.nft

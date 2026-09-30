@@ -6,7 +6,7 @@
 
 ARG SING_BOX_IMAGE=ghcr.io/sagernet/sing-box:v1.14.2
 
-FROM golang:1.25-alpine AS build
+FROM golang:alpine AS build
 ARG VERSION=
 WORKDIR /src
 COPY go.mod go.sum ./
