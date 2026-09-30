@@ -287,10 +287,10 @@ GPL-3.0-or-later
 
 ## Благодарности / Credits
 
-- **HydraVPN** — [https://github.com/HydraVPN/HydraVPN](https://github.com/HydraVPN/HydraVPN) — мобильный VPN клиент-референс / Mobile VPN client reference
+- **HydraVPN** — [https://github.com/Chistovik92/HydraVPN](https://github.com/Chistovik92/HydraVPN) — мобильный VPN клиент-референс / Mobile VPN client reference
 - **sing-box** — [https://github.com/SagerNet/sing-box](https://github.com/SagerNet/sing-box) — универсальная прокси-платформа / Universal proxy platform
 - **zapret/zapret2** — [https://github.com/bol-van/zapret](https://github.com/bol-van/zapret) — инструменты обхода DPI / DPI bypass tools
-- **ByeDPI/ciadpi** — [https://github.com/dmitry-ivanov/byeDPI](https://github.com/dmitry-ivanov/byeDPI) — пассивный обход DPI / Passive DPI bypass
+- **ByeDPI/ciadpi** — [https://github.com/hufrea/byedpi](https://github.com/hufrea/byedpi) — пассивный обход DPI / Passive DPI bypass
 - **OpenWRT** — [https://openwrt.org](https://openwrt.org) — целевая платформа / Target platform
 - **KeeneticOS** — [https://keenetic.com](https://keenetic.com) — целевая платформа / Target platform
 - **MikroTik RouterOS** — [https://mikrotik.com](https://mikrotik.com) — целевая платформа / Target platform
@@ -298,5 +298,5 @@ GPL-3.0-or-later
 ## Поддержка / Support
 
 - GitHub Issues: https://github.com/Chistovik92/HydraVPNforRouters/issues
-- Документация / Documentation: https://github.com/Chistovik92/HydraVPNforRouters/wiki
+- Документация / Documentation: https://github.com/Chistovik92/HydraVPNforRouters/tree/main/docs
 - Telegram: @SecretHero
