@@ -176,7 +176,16 @@ hydravpn-router providers
 hydravpn-router dns
 hydravpn-router firewall
 hydravpn-router subs
+
+# Аккаунт бота «Радар»: вход по коду и забор выданных подписок / Radar bot account: link by code, fetch issued subscriptions
+hydravpn-router radar link --server radar.example.org --code 12345678
+hydravpn-router radar sync
+hydravpn-router radar status
+hydravpn-router radar unlink
 ```
+
+**Аккаунт бота «Радар» (с бота 5.9.1).** В боте «VPN» → «Подключить приложение» выдаёт код на 5 минут. `radar link` меняет его на токен устройства (хранится в `--runtime-dir/radar.json`, права 0600) и добавляет выданные подписки в секцию `main` (или в первую; `--section`). Дальше роутер сам перечитывает подписки раз в 12 часов; `radar sync` — сразу. Только чтение: доступ выдаёт и отзывает бот. Команды работают через API управления (нужен `api_listen`). Подробности: [docs/API.md](docs/API.md).
+**Radar bot account (bot 5.9.1).** In the bot, "VPN" → "Connect an app" gives a code valid for 5 minutes. `radar link` exchanges it for a device token (kept in `--runtime-dir/radar.json`, mode 0600) and adds the issued subscriptions to section `main` (or the first one; `--section`). After that the router re-reads the subscriptions every 12 hours; `radar sync` does it at once. Read-only: access is issued and revoked in the bot. The commands use the management API (`api_listen` must be set). Details: [docs/API.md](docs/API.md).
 
 `stop`, `reload` и команды статуса находят работающий сервис по PID-файлу в `--runtime-dir` (по умолчанию `/var/run/hydravpn-router`; на Keenetic Entware пути `/opt/...` определяются автоматически). `reload` отправляет SIGHUP: сервис перечитывает конфиг без перезапуска.
 `stop`, `reload` and the status commands find the running service through the PID file in `--runtime-dir` (default `/var/run/hydravpn-router`; Keenetic Entware `/opt/...` paths are detected automatically). `reload` sends SIGHUP: the service re-reads its config without a restart.

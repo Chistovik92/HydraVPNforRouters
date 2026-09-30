@@ -29,6 +29,7 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
 	"github.com/Chistovik92/hydravpn-router/internal/logx"
+	"github.com/Chistovik92/hydravpn-router/internal/radar"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
 
@@ -51,6 +52,7 @@ type Options struct {
 	ConfigFile string // the file that mutations are saved to
 	RuntimeDir string // where a generated token is stored
 	Clash      *ClashClient
+	Radar      *radar.Client // the bot client; tests replace it
 }
 
 // Server is the management API.
@@ -61,6 +63,8 @@ type Server struct {
 	allow []*net.IPNet
 
 	cfgMu sync.Mutex // serializes read-modify-write of the config file
+
+	stopRadar chan struct{} // ends the periodic sync with the bot
 
 	failMu  sync.Mutex
 	fails   map[string][]time.Time
@@ -160,11 +164,17 @@ func (s *Server) Start() error {
 	}()
 	scheme := map[bool]string{true: "https", false: "http"}[useTLS]
 	s.log("info", "API listening on %s://%s", scheme, s.srv.Addr)
+	s.stopRadar = make(chan struct{})
+	go s.radarLoop(s.stopRadar)
 	return nil
 }
 
 // Stop shuts the server down.
 func (s *Server) Stop() {
+	if s.stopRadar != nil {
+		close(s.stopRadar)
+		s.stopRadar = nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	s.srv.Shutdown(ctx)
@@ -358,6 +368,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/test", s.handleNodeTest)
 
 	mux.HandleFunc("GET /api/v1/check/{name}", s.handleCheck)
+
+	mux.HandleFunc("GET /api/v1/radar", s.handleRadarStatus)
+	mux.HandleFunc("POST /api/v1/radar/link", s.handleRadarLink)
+	mux.HandleFunc("POST /api/v1/radar/sync", s.handleRadarSync)
+	mux.HandleFunc("DELETE /api/v1/radar", s.handleRadarUnlink)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

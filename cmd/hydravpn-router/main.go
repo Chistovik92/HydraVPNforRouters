@@ -54,6 +54,7 @@ var CLI struct {
 	APIToken  APITokenCmd  `cmd:"" name:"api-token" help:"Print the management API token"`
 	Pair      PairCmd      `cmd:"" help:"Print the link that adds this router to the HydraVPN app"`
 	Selftest  SelftestCmd  `cmd:"" help:"Check this router: nft --check, sing-box check, kernel tproxy support"`
+	Radar     RadarCmd     `cmd:"" help:"Link to an account in the Radar bot and fetch the subscriptions issued there"`
 }
 
 type StartCmd struct {

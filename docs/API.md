@@ -39,6 +39,10 @@ Changes that need the service to restart parts of itself (reload, subscription o
 | POST | `/api/v1/nodes/select` | `{"group":"main","node":"Node 1"}` |
 | POST | `/api/v1/nodes/test` | `{"node":"Node 1"}` → `{"delay_ms":123}` |
 | GET | `/api/v1/check/{name}` | diagnostics: `global`, `dns`, `singbox`, `nft`, `proxy`, … |
+| GET | `/api/v1/radar` | link to a Radar bot account: `{"linked":true,"server":"…","username":"…"}` (the token is never returned) |
+| POST | `/api/v1/radar/link` | `{"server":"radar.example.org","code":"12345678","section":"main"}`: exchange the code, then sync (`201`) |
+| POST | `/api/v1/radar/sync` | `{"section":"main"}` (optional): fetch the subscriptions and add the new ones |
+| DELETE | `/api/v1/radar` | disconnect the device in the bot and forget the token |
 
 Changes are written to the config file atomically, and only the changed list item is edited: comments, key order and two-space indentation of a hand-written file stay. Blank lines between blocks are dropped by the YAML library and a commented-out example below a list may move behind the new items. The previous file is kept as `config.yaml.bak`; a change that makes the config invalid is refused and nothing is written.
 
@@ -51,3 +55,20 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
      -d '{"section":"main","url":"https://panel.example/sub/xyz"}' \
      http://192.168.1.1:8088/api/v1/subscriptions
 ```
+
+## Radar bot account
+
+The router can sign in to a person's account in the Radar bot and take the subscriptions issued to them (bot API for apps, bot 5.9.1; the contract is `docs/API_APPS.md` in github.com/Chistovik92/radar).
+
+1. In the bot: "VPN" → "Connect an app". The bot shows a one-time code (8 digits, 5 minutes).
+2. `POST /api/v1/radar/link` with the bot address and the code (or `hydravpn-router radar link`). The router exchanges the code for a device token and stores it in `<runtime-dir>/radar.json` (mode 0600). The token is never returned by the API and never logged.
+3. Every working **subscription link** of the person is added to the section (`main`, else the first; `section` overrides) with automatic user agent and HWID and a 24 h refresh. Single keys (Outline) and config files (wg-easy) are skipped. A link already in the config, in any section, is not added twice.
+4. A linked router re-reads the bot every 12 hours. Subscriptions that disappeared from the bot are **not** removed from the config.
+5. If the device is disconnected in the bot, the next sync answers `409` and the link is dropped: a new code is needed.
+
+Answers: `201`/`200` with `{"status":…,"result":{"added":1,"present":0,"skipped":1,"section":"main"}}`; `409` not linked or disconnected in the bot; `422` the bot does not accept the code (a bot `401` is not passed through: here it would read as a wrong router token); `429` too many attempts; `502` the bot is unreachable. The bot address must be `https`; plain `http` is accepted only for localhost and private networks, and redirects are not followed, so the token cannot be carried to another address.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'      -d '{"server":"radar.example.org","code":"12345678"}'      http://192.168.1.1:8088/api/v1/radar/link
+```
+
