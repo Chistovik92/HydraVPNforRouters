@@ -23,6 +23,7 @@ type Supervisor struct {
 	bin          string
 	args         []string
 	cmd          *exec.Cmd
+	out          *lineWriter
 	done         chan struct{}
 	stopping     bool
 	respawnTimer *time.Timer
@@ -57,6 +58,14 @@ func (s *Supervisor) startLocked(bin string, args []string) error {
 	}
 
 	cmd := exec.Command(bin, args...)
+	// The child's output goes to the journal (same writer for both streams).
+	out := &lineWriter{emit: func(level, msg string) {
+		if s.OnLog != nil {
+			s.OnLog(level, "["+s.Name+"] "+msg)
+		}
+	}}
+	cmd.Stdout, cmd.Stderr = out, out
+	s.out = out
 	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		s.lastError = err.Error()
@@ -137,6 +146,12 @@ func (s *Supervisor) Status() Status {
 
 func (s *Supervisor) monitor(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
+	s.mu.Lock()
+	out := s.out
+	s.mu.Unlock()
+	if out != nil {
+		out.Flush()
+	}
 
 	s.mu.Lock()
 	if s.cmd == cmd {

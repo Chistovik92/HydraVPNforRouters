@@ -555,3 +555,11 @@ func (e *Engine) providersStatusLocked() map[string]interface{} {
 func (e *Engine) ForceUpdateSubscription(section, url string) error {
 	return e.subscriptionMgr.ForceUpdate(section, url)
 }
+
+// Restart stops and starts all components with the current configuration.
+func (e *Engine) Restart() error {
+	if err := e.Stop(); err != nil {
+		return err
+	}
+	return e.Start()
+}

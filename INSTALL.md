@@ -1,6 +1,6 @@
 # Установка HydraVPN for Router / Installation Guide
 
-> **Версия / Version**: 1.0.7
+> **Версия / Version**: 1.0.8
 
 ---
 
@@ -18,8 +18,8 @@
 | `hydravpn-router-<ver>-linux-mips` | MIPS big-endian (ath79/QCA) |
 | `hydravpn-router-<ver>-linux-mips64`, `-mips64le`, `-386` | прочие / other |
 
-`<ver>` без буквы `v` (например `1.0.7`), тег релиза — `v1.0.7`.
-`<ver>` has no `v` prefix (e.g. `1.0.7`); the release tag is `v1.0.7`.
+`<ver>` без буквы `v` (например `1.0.8`), тег релиза — `v1.0.8`.
+`<ver>` has no `v` prefix (e.g. `1.0.8`); the release tag is `v1.0.8`.
 
 MIPS-сборки используют softfloat и работают на роутерах без FPU.
 MIPS builds use softfloat and run on routers without an FPU.
@@ -47,7 +47,7 @@ wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/
 4. создаёт конфиг, только если его ещё нет / creates a config only if none exists;
 5. регистрирует сервис (procd / Entware rc.func / systemd) и запускает его / registers and starts the service.
 
-Опции / Options: `--yes` (без вопросов, для cron), `--version 1.0.7`, `--method docker`, `--help`.
+Опции / Options: `--yes` (без вопросов, для cron), `--version 1.0.8`, `--method docker`, `--help`.
 
 | Платформа | Бинарник | Конфиг | Сервис |
 |---|---|---|---|
@@ -79,7 +79,7 @@ KeeneticOS is closed; software goes to the OPKG storage (`/opt`) on a USB drive 
 Пакет собирается командой `make build-openwrt` (Docker) под архитектуры OpenWRT (`x86_64`, `aarch64_generic`, `aarch64_cortex-a53`, `arm_cortex-a7_neon-vfpv4`, `arm_cortex-a9`, `mipsel_24kc`, `mips_24kc`):
 
 ```bash
-opkg install /tmp/hydravpn-router_1.0.7_mipsel_24kc.ipk
+opkg install /tmp/hydravpn-router_1.0.8_mipsel_24kc.ipk
 ```
 
 Архитектуру роутера покажет `opkg print-architecture`. OpenWRT 25+ (apk) пока поддерживается только через `install.sh`.
@@ -91,7 +91,7 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. Use the contain
 
 1. Соберите образ под архитектуру роутера / Build the image for the router architecture:
    ```bash
-   docker buildx build --platform linux/arm64 -t hydravpn-router:1.0.7 --output type=docker,dest=hydravpn-router.tar .
+   docker buildx build --platform linux/arm64 -t hydravpn-router:1.0.8 --output type=docker,dest=hydravpn-router.tar .
    ```
    (`linux/arm/v7` для ARM32 / for ARM32)
 2. Загрузите `hydravpn-router.tar` на роутер (`disk1/`) и выполните / Upload it and run:

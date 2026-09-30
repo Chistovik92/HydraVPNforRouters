@@ -48,6 +48,7 @@ var CLI struct {
 	Subs      SubsCmd      `cmd:"" help:"Show subscriptions status"`
 	Check     CheckCmd     `cmd:"" help:"Run diagnostics"`
 	APIToken  APITokenCmd  `cmd:"" name:"api-token" help:"Print the management API token"`
+	Pair      PairCmd      `cmd:"" help:"Print the link that adds this router to the HydraVPN app"`
 }
 
 type StartCmd struct {
@@ -396,6 +397,32 @@ func (c *APITokenCmd) Run(g *Globals) error {
 		return errors.New("no token yet: set api_listen in the config and start the service")
 	}
 	fmt.Print(string(data))
+	return nil
+}
+
+type PairCmd struct {
+	ConfigFile string `short:"c" help:"Configuration file path" default:"${config_file}"`
+	Host       string `required:"" help:"Address of the router as the app sees it (LAN IP, VPN IP or host name)"`
+}
+
+func (c *PairCmd) Run(g *Globals) error {
+	cfg, err := config.LoadFromFile(c.ConfigFile)
+	if err != nil {
+		return err
+	}
+	token := cfg.Settings.APIToken
+	if token == "" {
+		data, err := os.ReadFile(mgmt.TokenFile(g.RuntimeDir))
+		if err != nil {
+			return errors.New("no token yet: set api_listen in the config and start the service")
+		}
+		token = strings.TrimSpace(string(data))
+	}
+	uri, err := mgmt.PairURI(cfg.Settings, c.Host, token)
+	if err != nil {
+		return err
+	}
+	fmt.Println(uri)
 	return nil
 }
 

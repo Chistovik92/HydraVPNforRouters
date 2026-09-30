@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.8
+
+### Приложение HydraVPN и удалённое управление / App integration
+- Output of sing-box, nfqws and ciadpi is now captured line by line into the journal with the detected level (it was discarded before); the journal is readable through the API and the live stream.
+- Full management through the API: sections (add, replace, delete), subscriptions, servers, `restart`, node selection; every change is audited.
+- `hydravpn-router pair --host <addr>` prints a `hydravpn-router://` link (address, port, token, TLS pinning fingerprint) that the app uses to add the router.
+- docs/REMOTE_ACCESS.md: comparison of ways to reach the router from the LAN and from the internet (VPN, port forward, SSH, reverse channel, Telegram) with a recommendation and the security requirements.
+
 ## 1.0.7
 
 ### Управление / Management

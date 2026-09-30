@@ -21,6 +21,9 @@ Errors: `{"error": "text"}` with a 4xx/5xx status.
 | GET | `/api/v1/status` | service, providers, DNS, firewall, subscriptions, lists, component versions |
 | GET | `/api/v1/config` | configuration with masked secrets |
 | POST | `/api/v1/reload` | re-read the config file and apply it |
+| POST | `/api/v1/restart` | stop and start all components (`202`) |
+| GET/POST | `/api/v1/sections` | list / add sections |
+| PUT/DELETE | `/api/v1/sections/{name}` | replace / delete a section (a section used by a subscription cannot be deleted) |
 | GET | `/api/v1/logs?n=200&level=info` | last journal entries |
 | GET | `/api/v1/logs/stream` | server-sent events with new entries (`?token=` is accepted here, EventSource cannot send headers) |
 | GET | `/api/v1/subscriptions` | subscriptions (`index` identifies one) |

@@ -29,6 +29,7 @@ func (f *fakeEngine) Reload(c *config.Config) error {
 	return nil
 }
 func (f *fakeEngine) ForceUpdateSubscription(section, url string) error { return nil }
+func (f *fakeEngine) Restart() error                                    { return nil }
 
 func setup(t *testing.T) (*httptest.Server, *fakeEngine, string, string) {
 	t.Helper()
@@ -174,5 +175,42 @@ func TestDisabledWithoutListen(t *testing.T) {
 	s, err := New(Options{Engine: &fakeEngine{cfg: cfg}, RuntimeDir: t.TempDir()})
 	if s != nil || err != nil {
 		t.Errorf("api must be off without api_listen: %v %v", s, err)
+	}
+}
+
+func TestSectionsCRUDAndReferentialCheck(t *testing.T) {
+	ts, _, cfgFile, token := setup(t)
+	if code, b := call(t, ts, token, "POST", "/api/v1/sections", map[string]interface{}{"name": "second", "enabled": true, "action": "bypass"}); code != 201 {
+		t.Fatalf("add: %d %s", code, b)
+	}
+	if code, _ := call(t, ts, token, "POST", "/api/v1/sections", map[string]interface{}{"name": "second"}); code != 400 {
+		t.Error("duplicate section accepted")
+	}
+	if code, _ := call(t, ts, token, "PUT", "/api/v1/sections/second", map[string]interface{}{"enabled": false, "action": "block"}); code != 200 {
+		t.Error("replace failed")
+	}
+	saved, _ := config.LoadFromFile(cfgFile)
+	if len(saved.Sections) != 2 || saved.Sections[1].Action != "block" || saved.Sections[1].Enabled {
+		t.Errorf("sections: %+v", saved.Sections)
+	}
+	// A section that a subscription points to cannot be deleted.
+	call(t, ts, token, "POST", "/api/v1/subscriptions", map[string]string{"section": "main", "url": "https://x.example/s"})
+	if code, _ := call(t, ts, token, "DELETE", "/api/v1/sections/main", nil); code != 400 {
+		t.Errorf("deleting a referenced section: %d", code)
+	}
+	if code, _ := call(t, ts, token, "DELETE", "/api/v1/sections/second", nil); code != 200 {
+		t.Error("delete failed")
+	}
+}
+
+func TestPairURI(t *testing.T) {
+	s := config.DefaultConfig().Settings
+	if _, err := PairURI(s, "192.168.1.1", "tok"); err == nil {
+		t.Error("pairing without api_listen must fail")
+	}
+	s.APIListen = "0.0.0.0:8088"
+	u, err := PairURI(s, "192.168.1.1", "tok")
+	if err != nil || u != "hydravpn-router://192.168.1.1:8088?tls=0&token=tok" {
+		t.Errorf("uri: %q %v", u, err)
 	}
 }

@@ -41,6 +41,7 @@ type Engine interface {
 	GetConfig() *config.Config
 	Reload(*config.Config) error
 	ForceUpdateSubscription(section, url string) error
+	Restart() error
 }
 
 // Options configure a Server.
@@ -292,6 +293,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		writeJSON(w, 200, s.opts.Engine.GetConfig().Masked())
 	})
 	mux.HandleFunc("POST /api/v1/reload", s.handleReload)
+	mux.HandleFunc("POST /api/v1/restart", s.handleRestart)
+
+	mux.HandleFunc("GET /api/v1/sections", s.handleSectionsList)
+	mux.HandleFunc("POST /api/v1/sections", s.handleSectionsAdd)
+	mux.HandleFunc("PUT /api/v1/sections/{name}", s.handleSectionsReplace)
+	mux.HandleFunc("DELETE /api/v1/sections/{name}", s.handleSectionsDelete)
 
 	mux.HandleFunc("GET /api/v1/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/v1/logs/stream", s.handleLogStream)
@@ -360,6 +367,86 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "reloaded"})
+}
+
+func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	// The reply is sent first: a restart closes listeners of the service.
+	writeJSON(w, 202, map[string]string{"status": "restarting"})
+	go func() {
+		if err := s.opts.Engine.Restart(); err != nil {
+			s.log("error", "restart failed: %v", err)
+		}
+	}()
+}
+
+// ---------------------------------------------------------------- sections
+
+func (s *Server) handleSectionsList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.opts.Engine.GetConfig().Masked().Sections)
+}
+
+func (s *Server) handleSectionsAdd(w http.ResponseWriter, r *http.Request) {
+	var sec config.Section
+	if err := readJSON(r, &sec); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	err := s.mutate(func(c *config.Config) error {
+		for _, e := range c.Sections {
+			if e.Name == sec.Name {
+				return errors.New("section already exists")
+			}
+		}
+		c.Sections = append(c.Sections, sec)
+		return nil
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 201, map[string]string{"status": "added"})
+}
+
+func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var sec config.Section
+	if err := readJSON(r, &sec); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	sec.Name = name
+	err := s.mutate(func(c *config.Config) error {
+		for i, e := range c.Sections {
+			if e.Name == name {
+				c.Sections[i] = sec
+				return nil
+			}
+		}
+		return errors.New("no such section")
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleSectionsDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	err := s.mutate(func(c *config.Config) error {
+		for i, e := range c.Sections {
+			if e.Name == name {
+				c.Sections = append(c.Sections[:i], c.Sections[i+1:]...)
+				return nil
+			}
+		}
+		return errors.New("no such section")
+	})
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
 // ---------------------------------------------------------------- logs
