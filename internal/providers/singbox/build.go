@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/lists"
 	"github.com/Chistovik92/hydravpn-router/internal/subscription"
 )
 
@@ -32,15 +33,33 @@ type NodeSource interface {
 // its subscription nodes, routing rules from sections/rules/lists, inbound
 // servers, DNS and the tproxy inbound the firewall redirects LAN traffic to.
 // nodes may be nil (no subscriptions yet).
-func ConfigFromSettings(cfg *config.Config, nodes NodeSource) *Config {
-	c := build(cfg, nodes, true)
-	c.Fallback = build(cfg, nil, false)
+func ConfigFromSettings(cfg *config.Config, nodes NodeSource, opts ...Option) *Config {
+	var o options
+	for _, f := range opts {
+		f(&o)
+	}
+	c := build(cfg, nodes, o, true)
+	c.Fallback = build(cfg, nil, o, false)
 	return c
 }
+
+// ListSource provides downloaded plain-text lists (.lst).
+type ListSource interface {
+	ListEntries(url string) (domains, cidrs []string, ok bool)
+}
+
+type options struct{ lists ListSource }
+
+// Option customizes ConfigFromSettings.
+type Option func(*options)
+
+// WithLists supplies downloaded .lst lists.
+func WithLists(l ListSource) Option { return func(o *options) { o.lists = l } }
 
 type builder struct {
 	cfg   *config.Config
 	nodes NodeSource
+	lists ListSource
 	c     *Config
 
 	used     map[string]bool   // outbound tags in use
@@ -49,10 +68,11 @@ type builder struct {
 	detours  map[string]string // node tag -> detour section
 }
 
-func build(cfg *config.Config, nodes NodeSource, sections bool) *Config {
+func build(cfg *config.Config, nodes NodeSource, o options, sections bool) *Config {
 	b := &builder{
 		cfg:      cfg,
 		nodes:    nodes,
+		lists:    o.lists,
 		used:     map[string]bool{directTag: true},
 		groups:   map[string]string{},
 		ruleSets: map[string]string{},
@@ -68,7 +88,7 @@ func build(cfg *config.Config, nodes NodeSource, sections bool) *Config {
 
 	// A single tproxy inbound; the firewall redirects LAN traffic to it.
 	c.Inbounds = []Inbound{
-		{"type": "tproxy", "tag": "tproxy-in", "listen": "0.0.0.0", "listen_port": config.TProxyPort},
+		{"type": "tproxy", "tag": "tproxy-in", "listen": tproxyListen(cfg), "listen_port": config.TProxyPort},
 		{"type": "direct", "tag": "dns-in", "listen": config.DNSListenAddress, "listen_port": 53},
 		{"type": "mixed", "tag": "service-mixed-in", "listen": "127.0.0.1", "listen_port": config.MixedProxyPort},
 	}
@@ -429,6 +449,9 @@ func (b *builder) listRules(name string) []Rule {
 // remoteRule registers a remote sing-box rule set and returns a rule using it.
 // Only .srs (binary) and .json (source) files can be used as rule sets.
 func (b *builder) remoteRule(u string, interval time.Duration, invert bool) []Rule {
+	if lists.NeedsDownload(u) {
+		return b.localList(u, invert)
+	}
 	tag, ok := b.ruleSets[u]
 	if !ok {
 		format := ""
@@ -465,6 +488,32 @@ func (b *builder) remoteRule(u string, interval time.Duration, invert bool) []Ru
 		r["invert"] = true
 	}
 	return []Rule{r}
+}
+
+// localList turns a downloaded .lst list into inline domain / subnet rules.
+func (b *builder) localList(u string, invert bool) []Rule {
+	if b.lists == nil {
+		b.warn("list %s: not downloaded yet", config.MaskURL(u))
+		return nil
+	}
+	domains, cidrs, ok := b.lists.ListEntries(u)
+	if !ok {
+		b.warn("list %s: not downloaded yet", config.MaskURL(u))
+		return nil
+	}
+	var rules []Rule
+	if len(domains) > 0 {
+		rules = append(rules, Rule{"domain_suffix": domains})
+	}
+	if len(cidrs) > 0 {
+		rules = append(rules, Rule{"ip_cidr": cidrs})
+	}
+	if invert {
+		for _, r := range rules {
+			r["invert"] = true
+		}
+	}
+	return rules
 }
 
 // proxyGroup builds the selector (and url-test) outbounds of a section and
@@ -862,4 +911,12 @@ func buildInbound(srv config.Server) (Inbound, error) {
 		}
 	}
 	return in, nil
+}
+
+// tproxyListen is dual-stack when IPv6 interception is enabled.
+func tproxyListen(cfg *config.Config) string {
+	if cfg.Settings.EnableIPv6 {
+		return "::"
+	}
+	return "0.0.0.0"
 }

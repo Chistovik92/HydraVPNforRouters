@@ -7,13 +7,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Chistovik92/hydravpn-router/internal/components"
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/dns"
+	"github.com/Chistovik92/hydravpn-router/internal/dnsredirect"
 	"github.com/Chistovik92/hydravpn-router/internal/firewall"
+	"github.com/Chistovik92/hydravpn-router/internal/lists"
 	"github.com/Chistovik92/hydravpn-router/internal/providers/byedpi"
 	"github.com/Chistovik92/hydravpn-router/internal/providers/singbox"
 	"github.com/Chistovik92/hydravpn-router/internal/providers/zapret"
 	"github.com/Chistovik92/hydravpn-router/internal/subscription"
+	"github.com/Chistovik92/hydravpn-router/internal/wanmon"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
 
@@ -46,6 +50,10 @@ type Engine struct {
 	dnsManager      *dns.Manager
 	firewallManager *firewall.Manager
 	subscriptionMgr *subscription.Manager
+	listsMgr        *lists.Manager
+	dnsRedirect     *dnsredirect.Redirect
+	wan             *wanmon.Monitor
+	comps           *components.Checker
 
 	// Status tracking
 	startTime   time.Time
@@ -86,16 +94,16 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 
 	e.dnsManager = dns.NewManager(dns.Options{Config: e.config, OnLog: e.log})
 	e.firewallManager = firewall.NewManager(firewall.Options{Config: e.config, OnLog: e.log})
-	e.subscriptionMgr = subscription.NewManager(subscription.Options{
-		Config: e.config,
-		OnLog:  e.log,
-		OnUpdate: func() {
-			select {
-			case e.subsChanged <- struct{}{}:
-			default:
-			}
-		},
-	})
+	notify := func() {
+		select {
+		case e.subsChanged <- struct{}{}:
+		default:
+		}
+	}
+	e.subscriptionMgr = subscription.NewManager(subscription.Options{Config: e.config, OnLog: e.log, OnUpdate: notify})
+	e.listsMgr = lists.NewManager(lists.Options{Config: e.config, OnLog: e.log, OnUpdate: notify})
+	e.dnsRedirect = dnsredirect.New(e.log)
+	e.comps = components.New(e.config, e.log)
 
 	return e, nil
 }
@@ -146,6 +154,12 @@ func (e *Engine) startComponents() error {
 	if err := e.subscriptionMgr.Start(e.ctx); err != nil {
 		return fmt.Errorf("failed to start subscription manager: %w", err)
 	}
+	if err := e.listsMgr.Start(e.ctx); err != nil {
+		return fmt.Errorf("failed to start list manager: %w", err)
+	}
+	e.applyDNSRedirect()
+	e.startWANMonitor()
+	e.comps.Start(e.ctx)
 	return nil
 }
 
@@ -178,15 +192,81 @@ func (e *Engine) applySubscriptionUpdates(ctx context.Context) {
 	}
 }
 
+// applyDNSRedirect points dnsmasq at sing-box when FakeIP needs it and
+// restores dnsmasq otherwise.
+func (e *Engine) applyDNSRedirect() {
+	var err error
+	if dnsredirect.Wanted(e.config) {
+		err = e.dnsRedirect.Apply()
+	} else {
+		err = e.dnsRedirect.Remove()
+	}
+	if err != nil {
+		e.log("warn", "DNS redirect: "+err.Error())
+	}
+}
+
+func (e *Engine) startWANMonitor() {
+	s := e.config.Settings
+	if !s.EnableBadWANInterfaceMonitoring || len(s.BadWANMonitoredInterfaces) == 0 {
+		return
+	}
+	delay := time.Duration(s.BadWANReloadDelay) * time.Millisecond
+	if delay <= 0 {
+		delay = 2 * time.Second
+	}
+	e.wan = &wanmon.Monitor{
+		Interfaces: s.BadWANMonitoredInterfaces,
+		Delay:      delay,
+		OnChange:   e.onWANChange,
+		OnLog:      e.log,
+	}
+	e.wan.Start(e.ctx)
+}
+
+func (e *Engine) stopWANMonitor() {
+	if e.wan != nil {
+		e.wan.Stop()
+		e.wan = nil
+	}
+}
+
+// onWANChange rebuilds routing after a WAN interface came back: the tproxy
+// rules are re-applied and sing-box drops its stale connections.
+func (e *Engine) onWANChange(iface, reason string) {
+	// Stop and Reload hold e.mu while they wait for this monitor to stop;
+	// they rebuild everything anyway, so skip instead of deadlocking.
+	if !e.mu.TryLock() {
+		return
+	}
+	defer e.mu.Unlock()
+	if e.GetState() != EngineStateRunning {
+		return
+	}
+	e.log("info", "WAN "+iface+" ("+reason+"): reloading firewall and sing-box")
+	if err := e.firewallManager.Reload(e.config); err != nil {
+		e.log("error", "firewall reload after WAN change: "+err.Error())
+	}
+	if err := e.singboxProvider.Reload(e.singboxConfig()); err != nil {
+		e.log("error", "sing-box reload after WAN change: "+err.Error())
+	}
+}
+
 // singboxConfig renders the sing-box configuration for the current settings
 // and the subscription nodes fetched so far.
 func (e *Engine) singboxConfig() *singbox.Config {
-	return singbox.ConfigFromSettings(e.config, e.subscriptionMgr)
+	return singbox.ConfigFromSettings(e.config, e.subscriptionMgr, singbox.WithLists(e.listsMgr))
 }
 
 // stopComponents stops everything in reverse order; stopping a component
 // that was never started is a no-op.
 func (e *Engine) stopComponents() {
+	e.comps.Stop()
+	e.stopWANMonitor()
+	if err := e.dnsRedirect.Remove(); err != nil {
+		e.log("warn", "dnsmasq restore: "+err.Error())
+	}
+	e.listsMgr.Stop()
 	e.subscriptionMgr.Stop()
 	e.firewallManager.Stop()
 	e.dnsManager.Stop()
@@ -242,6 +322,13 @@ func (e *Engine) Reload(newConfig *config.Config) error {
 	note("DNS", e.dnsManager.Reload(newConfig))
 	// Subscriptions first: the sing-box config is built from their nodes.
 	note("subscriptions", e.subscriptionMgr.Reload(newConfig))
+	note("lists", e.listsMgr.Reload(newConfig))
+	e.comps.Reload(newConfig)
+	if running {
+		e.applyDNSRedirect()
+		e.stopWANMonitor()
+		e.startWANMonitor()
+	}
 	if running {
 		note("providers", e.reloadProviders())
 	}
@@ -286,6 +373,8 @@ func (e *Engine) GetStatus() map[string]interface{} {
 	status["dns"] = e.dnsManager.GetStatus()
 	status["firewall"] = e.firewallManager.GetStatus()
 	status["subscriptions"] = e.subscriptionMgr.GetStatus()
+	status["lists"] = e.listsMgr.GetStatus()
+	status["components"] = e.comps.GetStatus()
 
 	return status
 }

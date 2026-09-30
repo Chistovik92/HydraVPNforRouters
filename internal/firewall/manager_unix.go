@@ -206,19 +206,33 @@ func (m *Manager) nftScript() string {
 	fmt.Fprintf(&b, "delete table inet %s\n", m.tableName)
 	fmt.Fprintf(&b, "table inet %s {\n", m.tableName)
 
+	tproxy6 := fmt.Sprintf("meta mark set %s tproxy ip6 to [::1]:%d accept", mark, config.TProxyPort)
+
 	writeSet(&b, "local_v4", "ipv4_addr", localSubnets())
 	writeSet(&b, "source_v4", "ipv4_addr", m.sourceIPs)
+	if m.config != nil && m.config.Settings.EnableIPv6 {
+		writeSet(&b, "local_v6", "ipv6_addr", localSubnets6())
+	}
 
 	fmt.Fprintf(&b, "\tchain %s {\n", m.chainName)
 	b.WriteString("\t\ttype filter hook prerouting priority mangle; policy accept;\n")
-	b.WriteString("\t\tmeta nfproto != ipv4 return\n")
-	b.WriteString("\t\tip daddr @local_v4 return\n")
+	v6 := m.config != nil && m.config.Settings.EnableIPv6
+	if !v6 {
+		b.WriteString("\t\tmeta nfproto != ipv4 return\n")
+	}
+	b.WriteString("\t\tmeta nfproto ipv4 ip daddr @local_v4 return\n")
+	if v6 {
+		b.WriteString("\t\tmeta nfproto ipv6 ip6 daddr @local_v6 return\n")
+	}
 	// tproxy needs a single transport protocol match per rule, so tcp and
 	// udp get their own rules ("meta l4proto { tcp, udp } tproxy" is
 	// rejected by nft).
 	for _, proto := range []string{"tcp", "udp"} {
 		if ifaces := quoteAll(m.interfaces); len(ifaces) > 0 {
-			fmt.Fprintf(&b, "\t\tiifname { %s } meta l4proto %s %s\n", strings.Join(ifaces, ", "), proto, tproxy)
+			fmt.Fprintf(&b, "\t\tiifname { %s } meta nfproto ipv4 meta l4proto %s %s\n", strings.Join(ifaces, ", "), proto, tproxy)
+			if v6 {
+				fmt.Fprintf(&b, "\t\tiifname { %s } meta nfproto ipv6 meta l4proto %s %s\n", strings.Join(ifaces, ", "), proto, tproxy6)
+			}
 		}
 		fmt.Fprintf(&b, "\t\tip saddr @source_v4 meta l4proto %s %s\n", proto, tproxy)
 	}
@@ -289,6 +303,29 @@ func localSubnets() []string {
 			}
 			masked := &net.IPNet{IP: ipnet.IP.Mask(ipnet.Mask).To4(), Mask: ipnet.Mask}
 			nets[masked.String()] = true
+		}
+	}
+	out := make([]string, 0, len(nets))
+	for n := range nets {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// localSubnets6 returns reserved IPv6 ranges plus the global networks of
+// local interfaces; traffic to them is never redirected.
+func localSubnets6() []string {
+	nets := map[string]bool{
+		"::/128": true, "::1/128": true, "fe80::/10": true, "fc00::/7": true, "ff00::/8": true,
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.To4() != nil || ipnet.IP.IsLinkLocalUnicast() {
+				continue
+			}
+			nets[(&net.IPNet{IP: ipnet.IP.Mask(ipnet.Mask), Mask: ipnet.Mask}).String()] = true
 		}
 	}
 	out := make([]string, 0, len(nets))
@@ -381,6 +418,14 @@ func (m *Manager) applyPolicyRouting() error {
 	if out, err := exec.Command("ip", "route", "replace", "local", "0.0.0.0/0", "dev", "lo", "table", table).CombinedOutput(); err != nil {
 		return fmt.Errorf("ip route replace: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	if m.config != nil && m.config.Settings.EnableIPv6 {
+		if out, err := exec.Command("ip", "-6", "rule", "add", "fwmark", mark, "lookup", table, "priority", table).CombinedOutput(); err != nil {
+			return fmt.Errorf("ip -6 rule add: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		if out, err := exec.Command("ip", "-6", "route", "replace", "local", "::/0", "dev", "lo", "table", table).CombinedOutput(); err != nil {
+			return fmt.Errorf("ip -6 route replace: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
 	return nil
 }
 
@@ -393,6 +438,13 @@ func (m *Manager) cleanupPolicyRouting() {
 		}
 	}
 	exec.Command("ip", "route", "flush", "table", table).Run()
+	// IPv6 leftovers are removed even if IPv6 was disabled by a reload.
+	for i := 0; i < 10; i++ {
+		if exec.Command("ip", "-6", "rule", "del", "fwmark", mark, "lookup", table).Run() != nil {
+			break
+		}
+	}
+	exec.Command("ip", "-6", "route", "flush", "table", table).Run()
 }
 
 func (m *Manager) cleanupLocked() {

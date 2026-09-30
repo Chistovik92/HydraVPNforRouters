@@ -223,3 +223,37 @@ func warned(c *Config, sub string) bool {
 	}
 	return false
 }
+
+type fakeLists map[string][2][]string
+
+func (f fakeLists) ListEntries(u string) ([]string, []string, bool) {
+	v, ok := f[u]
+	return v[0], v[1], ok
+}
+
+func TestLstListsBecomeInlineRules(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sections = []config.Section{{Name: "main", Enabled: true, SelectorProxyLinks: []string{"trojan://p@h.example:443#n"}, CommunityLists: []string{"ru", "missing"}}}
+	cfg.CommunityLists = []config.CommunityList{
+		{Name: "ru", URL: "https://x.example/ru.lst"},
+		{Name: "missing", URL: "https://x.example/none.lst"},
+	}
+	c := ConfigFromSettings(cfg, nil, WithLists(fakeLists{"https://x.example/ru.lst": {{"a.example"}, {"10.0.0.0/8"}}}))
+	var domain, cidr bool
+	for _, r := range c.Route.Rules {
+		if r["outbound"] != "main" {
+			continue
+		}
+		domain = domain || r["domain_suffix"] != nil
+		cidr = cidr || r["ip_cidr"] != nil
+	}
+	if !domain || !cidr {
+		t.Errorf("lst rules missing: domain=%v cidr=%v", domain, cidr)
+	}
+	if !warned(c, "not downloaded yet") {
+		t.Errorf("no warning for the list that is not downloaded: %v", c.Warnings)
+	}
+	if len(c.Route.RuleSet) != 0 {
+		t.Error(".lst must not become a remote rule set")
+	}
+}
