@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.4
+
+- **Update from the web UI.** The service updates itself to a newer release: the "Обновление" card on the status page (and a badge in the header when a release is out), `GET /api/v1/update`, `POST /api/v1/update/check`, `POST /api/v1/update` (optionally `{"version":"x.y.z"}`, also to roll back). The binary for this platform is downloaded from GitHub Releases, its SHA-256 must match the release's `checksums.txt` (a release without a checksum is refused), and the new file must run and report the expected version before it replaces the old one (atomic rename, free space checked first). Then the service stops normally (rules removed, sing-box stopped) and re-executes the new binary under the same PID, so procd, systemd and the Entware script keep tracking it. New releases are looked for a minute after start and then every `component_update_check_interval` (with `component_update_check_enabled`); nothing is installed without a request. `download_components_via_proxy` applies. Not available in containers (pull the new image). On Keenetic, Entware's CA bundle is used for HTTPS.
+- `scripts/bump-version.sh` replaced the old version as a regular expression anywhere in INSTALL.md and had turned the MikroTik container address `172.17.0.2` into `1.2.37.0.2`; it now matches only whole versions, and INSTALL.md is fixed.
+
 ## 1.2.3
 
 - **Radar bot account.** The router can sign in to a person's account in the Radar bot (bot API for apps, bot 5.9.1) with a one-time code and add the subscriptions issued there: `hydravpn-router radar link|sync|status|unlink` and `GET/POST/DELETE /api/v1/radar…` (see docs/API.md). The device token lives in `radar.json` next to the config file (0600, survives reboots); https only (http for private networks), redirects are not followed; a linked router syncs a minute after start and then every 12 h; read-only — access is issued and revoked in the bot. Not verified against a live bot: the tests use an emulator of its API.

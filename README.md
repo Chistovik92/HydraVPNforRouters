@@ -73,7 +73,7 @@ The script detects the platform and architecture, downloads the binary from GitH
 curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 ```
 
-Обновление / Update:
+Обновление / Update: кнопкой в веб-интерфейсе (вкладка «Статус») или / with the button in the web UI ("Статус" tab) or
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/update.sh | sh

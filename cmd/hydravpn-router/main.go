@@ -24,6 +24,7 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/mgmt"
 	"github.com/Chistovik92/hydravpn-router/internal/process"
 	"github.com/Chistovik92/hydravpn-router/internal/selftest"
+	"github.com/Chistovik92/hydravpn-router/internal/selfupdate"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 	"github.com/alecthomas/kong"
 	"gopkg.in/yaml.v3"
@@ -71,6 +72,7 @@ func (c *StartCmd) Run(g *Globals) error {
 	applyDebugBuild(&cfg.Settings)
 	newJournal(cfg.Settings)
 	startPprof()
+	selfupdate.CleanupOld("")
 	if err := process.KillChildrenOnExit(); err != nil {
 		logLine("warn", "cannot tie child processes to this process: "+err.Error())
 	}
@@ -120,7 +122,32 @@ func (c *StartCmd) Run(g *Globals) error {
 	defer cancel()
 	go writeStatusLoop(ctx, engine, g.statusFile())
 
-	api, err := mgmt.New(mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir})
+	// Self-update from the web UI / API: the updater replaces the binary and
+	// asks for a restart; the loop below then exits through the normal
+	// shutdown path and main re-executes the new binary.
+	restartCh := make(chan struct{}, 1)
+	updater := selfupdate.New(selfupdate.Options{
+		Current: version.Version,
+		Proxy: func() string {
+			if engine.GetConfig().Settings.DownloadComponentsViaProxy {
+				return fmt.Sprintf("http://127.0.0.1:%d", config.MixedProxyPort)
+			}
+			return ""
+		},
+		Restart: func() {
+			select {
+			case restartCh <- struct{}{}:
+			default:
+			}
+		},
+		OnLog: logLine,
+	})
+	go updater.RunChecks(ctx, time.Minute, func() (bool, time.Duration) {
+		s := engine.GetConfig().Settings
+		return s.ComponentUpdateCheckEnabled, s.ComponentUpdateCheckInterval
+	})
+
+	api, err := mgmt.New(mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir, Updater: updater})
 	if err != nil {
 		logLine("error", "management API disabled: "+err.Error())
 	} else if api != nil {
@@ -131,7 +158,15 @@ func (c *StartCmd) Run(g *Globals) error {
 		}
 	}
 
-	for sig := range sigCh {
+	for {
+		var sig os.Signal
+		select {
+		case <-restartCh:
+			logLine("info", "Restarting into the updated binary "+updater.Binary())
+			restartInto = updater.Binary()
+			return nil
+		case sig = <-sigCh:
+		}
 		if sig != syscall.SIGHUP {
 			logLine("info", "Received "+sig.String()+", shutting down")
 			return nil
@@ -147,8 +182,11 @@ func (c *StartCmd) Run(g *Globals) error {
 		}
 		writeStatus(engine, g.statusFile())
 	}
-	return nil
 }
+
+// restartInto is set when the service stops to restart into an updated
+// binary; main re-executes it after every deferred cleanup has run.
+var restartInto string
 
 // journal is the application log; replaced by newJournal once the config is read.
 var journal, _ = logx.New(logx.Options{Level: "info"})
@@ -566,5 +604,11 @@ func main() {
 	)
 
 	err := ctx.Run()
+	if err == nil && restartInto != "" {
+		if err = reexec(restartInto); err != nil {
+			// Exit non-zero so procd/systemd restart the service.
+			err = fmt.Errorf("restart into %s: %w", restartInto, err)
+		}
+	}
 	ctx.FatalIfErrorf(err)
 }
