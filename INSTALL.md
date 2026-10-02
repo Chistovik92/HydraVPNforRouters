@@ -1,6 +1,6 @@
 # Установка HydraVPN for Router / Installation Guide
 
-> **Версия / Version**: 1.2.3
+> **Версия / Version**: 1.2.4
 
 ---
 
@@ -18,8 +18,8 @@
 | `hydravpn-router-<ver>-linux-mips` | MIPS big-endian (ath79/QCA) |
 | `hydravpn-router-<ver>-linux-mips64`, `-mips64le`, `-386` | прочие / other |
 
-`<ver>` без буквы `v` (например `1.2.3`), тег релиза — `v1.2.3`.
-`<ver>` has no `v` prefix (e.g. `1.2.3`); the release tag is `v1.2.3`.
+`<ver>` без буквы `v` (например `1.2.4`), тег релиза — `v1.2.4`.
+`<ver>` has no `v` prefix (e.g. `1.2.4`); the release tag is `v1.2.4`.
 
 MIPS-сборки используют softfloat и работают на роутерах без FPU.
 MIPS builds use softfloat and run on routers without an FPU.
@@ -47,7 +47,7 @@ wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/
 4. создаёт конфиг, только если его ещё нет / creates a config only if none exists;
 5. регистрирует сервис (procd / Entware rc.func / systemd) и запускает его / registers and starts the service.
 
-Опции / Options: `--yes` (без вопросов, для cron), `--version 1.2.3`, `--method docker`, `--help`.
+Опции / Options: `--yes` (без вопросов, для cron), `--version 1.2.4`, `--method docker`, `--help`.
 
 | Платформа | Бинарник | Конфиг | Сервис |
 |---|---|---|---|
@@ -81,7 +81,7 @@ KeeneticOS is closed; software goes to the OPKG storage (`/opt`) on a USB drive 
 Пакет собирается командой `make build-openwrt` (Docker) под архитектуры OpenWRT (`x86_64`, `aarch64_generic`, `aarch64_cortex-a53`, `arm_cortex-a7_neon-vfpv4`, `arm_cortex-a9`, `mipsel_24kc`, `mips_24kc`):
 
 ```bash
-opkg install /tmp/hydravpn-router_1.2.3_mipsel_24kc.ipk
+opkg install /tmp/hydravpn-router_1.2.4_mipsel_24kc.ipk
 ```
 
 Архитектуру роутера покажет `opkg print-architecture`. OpenWRT 25+ (apk) пока поддерживается только через `install.sh`.
@@ -93,18 +93,18 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. Use the contain
 
 1. Соберите образ под архитектуру роутера / Build the image for the router architecture:
    ```bash
-   docker buildx build --platform linux/arm64 -t hydravpn-router:1.2.3 --output type=docker,dest=hydravpn-router.tar .
+   docker buildx build --platform linux/arm64 -t hydravpn-router:1.2.4 --output type=docker,dest=hydravpn-router.tar .
    ```
    (`linux/arm/v7` для ARM32 / for ARM32)
 2. Загрузите `hydravpn-router.tar` на роутер (`disk1/`) и выполните / Upload it and run:
    ```
-   /interface veth add name=veth-hydravpn address=1.2.37.0.2/24 gateway=1.2.37.0.1
+   /interface veth add name=veth-hydravpn address=172.17.0.2/24 gateway=172.17.0.1
    /container mounts add name=hydravpn-config src=disk1/hydravpn-config dst=/etc/hydravpn-router
    /container add file=disk1/hydravpn-router.tar interface=veth-hydravpn mounts=hydravpn-config root-dir=disk1/hydravpn logging=yes
    /container start [find tag~"hydravpn"]
    ```
 
-Ограничения MikroTik (не проверены на железе): контейнеры доступны на RouterOS 7.6+ с пакетом `container` и только на ARM/ARM64/x86 (не на MIPS-моделях). Контейнер работает в своей сети (`veth`), поэтому LAN-трафик нужно направить в него на стороне RouterOS (маркировка в `/ip firewall mangle` и маршрут через `1.2.37.0.2`), а в конфиге задать `source_network_interfaces: ["eth0"]` (интерфейс контейнера). Подробная схема и команды RouterOS: [docs/MIKROTIK.md](docs/MIKROTIK.md). Автоматической настройки RouterOS нет.
+Ограничения MikroTik (не проверены на железе): контейнеры доступны на RouterOS 7.6+ с пакетом `container` и только на ARM/ARM64/x86 (не на MIPS-моделях). Контейнер работает в своей сети (`veth`), поэтому LAN-трафик нужно направить в него на стороне RouterOS (маркировка в `/ip firewall mangle` и маршрут через `172.17.0.2`), а в конфиге задать `source_network_interfaces: ["eth0"]` (интерфейс контейнера). Подробная схема и команды RouterOS: [docs/MIKROTIK.md](docs/MIKROTIK.md). Автоматической настройки RouterOS нет.
 
 Если образ опубликован в реестре (`make docker-build && docker push ...`), вместо `file=` укажите `remote-image=`.
 
@@ -134,6 +134,11 @@ hydravpn-router check all
 ---
 
 ## Обновление / Update
+
+Из веб-интерфейса (`api_listen`): на вкладке «Статус» карточка «Обновление» → «Обновить до X». Сервис сам скачает бинарник, проверит SHA-256 и перезапустится. В контейнере так нельзя: обновите образ.
+From the web UI (`api_listen`): "Статус" tab → "Обновление" → "Обновить до X". The service downloads the binary, checks SHA-256 and restarts itself (see [docs/API.md](docs/API.md#updating-the-service)). Not in containers: pull the new image.
+
+Из терминала / From the terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/update.sh | sh

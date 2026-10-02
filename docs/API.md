@@ -43,6 +43,9 @@ Changes that need the service to restart parts of itself (reload, subscription o
 | POST | `/api/v1/radar/link` | `{"server":"radar.example.org","code":"12345678","section":"main"}`: exchange the code, then sync (`201`) |
 | POST | `/api/v1/radar/sync` | `{"section":"main"}` (optional): fetch the subscriptions and add the new ones |
 | DELETE | `/api/v1/radar` | disconnect the device in the bot and forget the token |
+| GET | `/api/v1/update` | self-update state: `current`, `latest`, `update_available`, `state`, progress, `error`, `supported` (no network access) |
+| POST | `/api/v1/update/check` | ask GitHub for the latest release now |
+| POST | `/api/v1/update` | install the latest release (`202`); `{"version":"1.2.3"}` installs a given one, also older (rollback). `409` an update is running, `501` not supported here (container) |
 
 Changes are written to the config file atomically, and only the changed list item is edited: comments, key order and two-space indentation of a hand-written file stay. Blank lines between blocks are dropped by the YAML library and a commented-out example below a list may move behind the new items. The previous file is kept as `config.yaml.bak`; a change that makes the config invalid is refused and nothing is written.
 
@@ -54,6 +57,24 @@ curl -H "Authorization: Bearer $TOKEN" http://192.168.1.1:8088/api/v1/status
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
      -d '{"section":"main","url":"https://panel.example/sub/xyz"}' \
      http://192.168.1.1:8088/api/v1/subscriptions
+```
+
+## Updating the service
+
+`POST /api/v1/update` answers `202` at once and works in the background; follow it with `GET /api/v1/update` (`state`: `checking` → `downloading` → `verifying` → `installing` → `restarting`, or `failed` with `error`).
+
+1. The release is `latest` on GitHub (pre-releases only with an explicit `version`). The asset is the one `install.sh` would pick: `hydravpn-router-<version>-linux-<arch>`.
+2. Its SHA-256 must match `checksums.txt` of the same release; a release without an entry is refused. The file is written next to the binary as `<binary>.new` after checking the free space.
+3. The new file is started with `version` and must report the expected version, so a build for another CPU is never installed.
+4. It replaces the binary with an atomic rename; the service stops normally (firewall rules removed, sing-box stopped) and re-executes itself with the same PID. The API is unreachable for a few seconds. The web UI waits until `/api/v1/version` reports the new version.
+
+The same check runs by itself a minute after start and then every `component_update_check_interval` (if `component_update_check_enabled`); `GET /api/v1/status` includes the result as `update`. Nothing is installed without a request. Downloads go through the local proxy when `download_components_via_proxy` is set. In a container the update is refused: pull the new image.
+
+The checksum protects against a damaged download, not against a replaced release: signed releases are planned (ROADMAP 1.3.0).
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.1:8088/api/v1/update
+curl -H "Authorization: Bearer $TOKEN" http://192.168.1.1:8088/api/v1/update
 ```
 
 ## Radar bot account

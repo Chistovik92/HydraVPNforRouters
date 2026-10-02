@@ -25,6 +25,8 @@
   pre { margin:0; white-space:pre-wrap; word-break:break-all; max-height:60vh; overflow:auto; font-size:12px; }
   .lv-error { color:var(--bad); } .lv-warn { color:#b7791f; }
   #login { max-width:360px; margin:15vh auto; }
+  .badge { background:var(--ok); color:#fff; border:0; border-radius:10px; padding:2px 9px; font-size:12px; cursor:pointer; }
+  progress { width:100%; height:10px; }
 </style>
 </head>
 <body>
@@ -36,7 +38,7 @@
 </div>
 <div id="app" hidden>
 <header>
-  <h1>HydraVPN for Router <small id="ver"></small></h1>
+  <h1>HydraVPN for Router <small id="ver"></small> <button id="upd" class="badge" hidden onclick="tab='status';start()"></button></h1>
   <nav id="nav"></nav>
   <button class="act" onclick="act('/api/v1/reload','POST')">Reload</button>
 </header>
@@ -45,7 +47,7 @@
 <script>
 const $ = s => document.querySelector(s);
 let token = sessionStorage.getItem('token') || '';
-let tab = 'status', timer;
+let tab = 'status', timer, updating = false;
 const tabs = {status:'Статус', subs:'Подписки', nodes:'Узлы', servers:'Серверы', logs:'Журнал', checks:'Диагностика'};
 
 function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -68,12 +70,13 @@ async function start(){
   try {
     const v = await api('/api/v1/version');
     $('#ver').textContent = v.version;
+    api('/api/v1/update').then(showBadge).catch(() => {});
   } catch(e) { $('#login').hidden = false; $('#app').hidden = true; return; }
   $('#login').hidden = true; $('#app').hidden = false;
   $('#nav').innerHTML = Object.entries(tabs).map(([k,v]) => `<button data-t="${k}" class="${k===tab?'on':''}">${v}</button>`).join('');
   $('#nav').onclick = e => { if (e.target.dataset.t) { tab = e.target.dataset.t; start(); } };
   render();
-  timer = setInterval(() => { if (tab==='status' || tab==='logs') render(); }, 5000);
+  timer = setInterval(() => { if (!updating && (tab==='status' || tab==='logs')) render(); }, 5000);
 }
 
 async function render(){
@@ -91,7 +94,9 @@ async function render(){
         <tr><th>Firewall</th><td>${s.firewall.running?'<span class=ok>active</span>':'<span class=bad>off</span>'} ${esc(s.firewall.backend)} ${esc(s.firewall.last_error)}</td></tr>
         <tr><th>DNS</th><td>${esc((s.dns.current_servers||[]).join(', '))}</td></tr>
       </table></div>
+      ${updateCard(s.update)}
       <div class="card"><b>Компоненты</b><pre>${esc(JSON.stringify(s.components,null,1))}</pre></div>`;
+      showBadge(s.update);
     } else if (tab === 'subs') {
       const l = await api('/api/v1/subscriptions'), st = (await api('/api/v1/status')).subscriptions.subscriptions || {};
       m.innerHTML = `<div class="card"><table><tr><th>#</th><th>Секция</th><th>URL</th><th>Обновление</th><th></th></tr>` +
@@ -129,11 +134,77 @@ document.addEventListener('click', e => {
     case 'select': act('/api/v1/nodes/select', 'POST', {group: d.g, node: d.n}); break;
     case 'test': testNode(d.n, b); break;
     case 'check': runCheck(d.n); break;
+    case 'upd-check': checkUpdate(b); break;
+    case 'upd-start': startUpdate(d.v); break;
   }
 });
 async function addSub(){ await act('/api/v1/subscriptions','POST',{section:$('#ss').value,url:$('#su').value}); }
 async function testNode(n,b){ b.textContent='…'; try { const r = await api('/api/v1/nodes/test','POST',{node:n}); b.textContent = r.delay_ms+' ms'; } catch(e){ b.textContent='✕'; } }
 async function runCheck(c){ $('#chk').textContent='…'; try { $('#chk').textContent = JSON.stringify(await api('/api/v1/check/'+c),null,1); } catch(e){ $('#chk').textContent=e.message; } }
+// ---------------------------------------------------------------- update
+const updStates = {idle:'', checking:'проверка…', downloading:'загрузка…', verifying:'проверка файла…', installing:'установка…', restarting:'перезапуск…', failed:'ошибка'};
+function showBadge(u){
+  const b = $('#upd'); if (!b) return;
+  b.hidden = !(u && u.update_available && u.supported);
+  if (!b.hidden) b.textContent = '↑ ' + u.latest;
+}
+function updateCard(u){
+  if (!u) return '';
+  const rows = [
+    ['Установлена', esc(u.current)],
+    ['Последний релиз', u.latest ? `${esc(u.latest)} ${u.release_url ? `<a href="${esc(u.release_url)}" target="_blank" rel="noopener">что нового</a>` : ''}` : '—'],
+    ['Проверено', esc(u.checked || '—')],
+  ];
+  if (u.state && u.state !== 'idle') rows.push(['Состояние', `<span class="${u.state==='failed'?'bad':''}">${esc(updStates[u.state] || u.state)}</span>`]);
+  if (u.error) rows.push(['Ошибка', `<span class=bad>${esc(u.error)}</span>`]);
+  let actions = '';
+  if (!u.supported) actions = `<small>Обновление из интерфейса недоступно: ${esc(u.unsupported_reason)}</small>`;
+  else {
+    actions = `<button class=act data-a="upd-check">Проверить</button>`;
+    if (u.update_available) actions += ` <button class=act data-a="upd-start" data-v="${esc(u.latest)}">Обновить до ${esc(u.latest)}</button>`;
+    else if (u.latest) actions += ` <span class=ok>Установлена последняя версия</span>`;
+  }
+  return `<div class="card"><b>Обновление</b><table>${rows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table><div class="row">${actions}</div></div>`;
+}
+async function checkUpdate(b){
+  b.textContent = '…';
+  try { await api('/api/v1/update/check', 'POST'); } catch(e) {}
+  render();
+}
+async function startUpdate(v){
+  if (!confirm(`Обновить HydraVPN for Router до ${v}?
+Сервис перезапустится, маршрутизация прервётся на несколько секунд.`)) return;
+  try { await api('/api/v1/update', 'POST', {version: v}); } catch(e) { alert(e.message); return; }
+  watchUpdate(v);
+}
+// Shows progress until the service comes back with the new version. While it
+// restarts the API is unreachable for a few seconds; that is expected.
+async function watchUpdate(v){
+  updating = true;
+  const m = $('#main'), began = Date.now();
+  const show = (text, pct, bad) => { m.innerHTML = `<div class="card"><b>Обновление до ${esc(v)}</b><p class="${bad?'bad':''}">${esc(text)}</p>${pct==null?'':`<progress max="100" value="${pct}"></progress>`}</div>`; };
+  let restarting = false;
+  while (Date.now() - began < 10*60*1000) {
+    await new Promise(r => setTimeout(r, 1500));
+    if (!restarting) {
+      try {
+        const u = await api('/api/v1/update');
+        if (u.state === 'failed') { show('Не удалось обновить: ' + (u.error || ''), null, true); updating = false; return; }
+        if (u.state === 'restarting') { restarting = true; continue; }
+        const pct = u.size_bytes > 0 ? Math.round(100 * u.downloaded_bytes / u.size_bytes) : null;
+        show(updStates[u.state] || u.state, pct);
+      } catch(e) { restarting = true; }
+    } else {
+      show('Перезапуск сервиса…');
+      try {
+        const r = await api('/api/v1/version');
+        if (r.version === v) { updating = false; alert('Обновлено до ' + v); start(); return; }
+      } catch(e) { /* still restarting */ }
+    }
+  }
+  updating = false;
+  show('Сервис не ответил новой версией за 10 минут. Проверьте журнал: logread -e hydravpn-router', null, true);
+}
 start();
 </script>
 </body>

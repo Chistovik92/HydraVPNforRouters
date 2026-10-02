@@ -53,6 +53,7 @@ type Options struct {
 	RuntimeDir string // where a generated token is stored
 	Clash      *ClashClient
 	Radar      *radar.Client // the bot client; tests replace it
+	Updater    Updater       // self-update; nil disables /api/v1/update
 }
 
 // Server is the management API.
@@ -338,7 +339,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]string{"version": version.Version, "commit": version.Commit})
 	})
 	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, s.opts.Engine.GetStatus())
+		st := s.opts.Engine.GetStatus()
+		if s.opts.Updater != nil {
+			st["update"] = s.opts.Updater.Status()
+		}
+		writeJSON(w, 200, st)
 	})
 	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, s.opts.Engine.GetConfig().Masked())
@@ -373,6 +378,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/radar/link", s.handleRadarLink)
 	mux.HandleFunc("POST /api/v1/radar/sync", s.handleRadarSync)
 	mux.HandleFunc("DELETE /api/v1/radar", s.handleRadarUnlink)
+
+	s.updateRoutes(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

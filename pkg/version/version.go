@@ -8,7 +8,7 @@ package version
 import "strings"
 
 var (
-	Version   = "1.2.3"
+	Version   = "1.2.4"
 	Commit    = "dev"
 	Date      = "unknown"
 	BuiltBy   = "unknown"
