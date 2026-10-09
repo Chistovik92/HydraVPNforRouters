@@ -18,6 +18,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION="${1:-$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$ROOT/pkg/version/version.go")}"
 VERSION="${VERSION#v}"
 DIST="${2:-$ROOT/dist}"
+DIST=$(cd "$DIST" && pwd)   # absolute: the script changes directory
 
 # OpenWrt package architecture | binary arch (suffix of the binary name)
 OPENWRT="x86_64|amd64
