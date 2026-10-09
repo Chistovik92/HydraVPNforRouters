@@ -25,36 +25,42 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
-      - name: Binaries
+      - name: Binaries and packages (OpenWrt, KeeneticOS)
+        # hydravpn-router-<ver>-<openwrt|keeneticos|routeros>-<arch>,
+        # hydravpn-router-<openwrt|keeneticos>_<ver>_<arch>.ipk, sizes.md
         run: bash scripts/build.sh "${GITHUB_REF_NAME#v}" dist
 
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - name: OpenWrt packages (.ipk)
+      - name: RouterOS container images
         run: |
           set -e
           V="${GITHUB_REF_NAME#v}"
-          for t in \
-            "x86_64|amd64|" "aarch64_generic|arm64|" "aarch64_cortex-a53|arm64|" \
-            "arm_cortex-a7_neon-vfpv4|arm|7" "arm_cortex-a9|arm|7" \
-            "mipsel_24kc|mipsle|" "mips_24kc|mips|"; do
-            pkg=${t%%|*}; rest=${t#*|}; goarch=${rest%%|*}; goarm=${rest#*|}
-            docker buildx build -f build/openwrt/Dockerfile \
-              --build-arg VERSION="$V" --build-arg PKG_ARCH="$pkg" \
-              --build-arg GOARCH="$goarch" --build-arg GOARM="$goarm" \
-              --output type=local,dest=dist/openwrt .
+          for t in "arm64|linux/arm64" "armv7|linux/arm/v7" "amd64|linux/amd64"; do
+            arch=${t%%|*}; platform=${t#*|}
+            docker buildx build --platform "$platform" --build-arg VERSION="$V"               -t "hydravpn-router:$V"               --output "type=docker,dest=dist/hydravpn-router-routeros-$V-$arch.tar" .
           done
-          cp dist/openwrt/*.ipk dist/
-          (cd dist && sha256sum *.ipk >> checksums.txt)
+          (cd dist && sha256sum hydravpn-router-routeros-*.tar >> checksums.txt)
 
-      - name: Container image
+      - name: Container image (registry)
         if: ${{ !contains(github.ref_name, '-') }}
         run: |
           V="${GITHUB_REF_NAME#v}"
           IMAGE="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr A-Z a-z)/hydravpn-router"
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
-            --build-arg VERSION="$V" -t "$IMAGE:$V" -t "$IMAGE:latest" --push .
+          docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7             --build-arg VERSION="$V" -t "$IMAGE:$V" -t "$IMAGE:latest" --push .
+
+      - name: Release notes
+        run: |
+          {
+            echo
+            echo "### Packages and installed size"
+            echo
+            cat dist/sizes.md
+            echo
+            echo "RouterOS images: hydravpn-router-routeros-${GITHUB_REF_NAME#v}-<arm64|armv7|amd64>.tar"
+          } >> dist/RELEASE_NOTES.md
 
       - name: GitHub release
         env:
@@ -65,4 +71,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" $FLAGS \
             --title "HydraVPN for Router ${GITHUB_REF_NAME#v}" \
             --notes-file dist/RELEASE_NOTES.md \
-            dist/hydravpn-router-* dist/*.ipk dist/checksums.txt
+            dist/hydravpn-router-* dist/checksums.txt dist/sizes.md scripts/install.rsc

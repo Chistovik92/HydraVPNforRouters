@@ -48,7 +48,7 @@
 const $ = s => document.querySelector(s);
 let token = sessionStorage.getItem('token') || '';
 let tab = 'status', timer, updating = false;
-const tabs = {status:'Статус', subs:'Подписки', nodes:'Узлы', servers:'Серверы', logs:'Журнал', checks:'Диагностика'};
+const tabs = {status:'Статус', subs:'Подписки', nodes:'Узлы', servers:'Серверы', rules:'Правила', mapper:'Маппер', genconfig:'Конфиг', keenetic:'Keenetic', logs:'Журнал', checks:'Диагностика'};
 
 function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -121,7 +121,10 @@ async function render(){
       m.innerHTML = `<div class="card"><pre>` + l.map(e => `<div class="lv-${e.level}">${esc(e.time.slice(11,19))} [${e.level}] ${esc(e.message)}</div>`).join('') + `</pre></div>`;
     } else if (tab === 'checks') {
       m.innerHTML = `<div class="card"><div class="row">` + ['global','dns','singbox','nft','proxy'].map(c => `<button class=act data-a="check" data-n="${c}">${c}</button>`).join('') + `</div><pre id="chk"></pre></div>`;
-    }
+    } else if (tab === 'rules') await renderRules(m);
+    else if (tab === 'mapper') renderMapper(m);
+    else if (tab === 'genconfig') renderGenConfig(m);
+    else if (tab === 'keenetic') await renderKeenetic(m);
   } catch(e) { m.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; }
 }
 document.addEventListener('click', e => {
@@ -136,11 +139,99 @@ document.addEventListener('click', e => {
     case 'check': runCheck(d.n); break;
     case 'upd-check': checkUpdate(b); break;
     case 'upd-start': startUpdate(d.v); break;
+    case 'rules-save': saveRules(); break;
+    case 'map-run': runMapper(false); break;
+    case 'map-apply': if (confirm('Добавить маршруты в роутер через ndmc?')) runMapper(true); break;
+    case 'gen-run': runGenConfig(); break;
+    case 'kn-proxy': keeneticProxy(d.apply === '1'); break;
   }
 });
 async function addSub(){ await act('/api/v1/subscriptions','POST',{section:$('#ss').value,url:$('#su').value}); }
 async function testNode(n,b){ b.textContent='…'; try { const r = await api('/api/v1/nodes/test','POST',{node:n}); b.textContent = r.delay_ms+' ms'; } catch(e){ b.textContent='✕'; } }
 async function runCheck(c){ $('#chk').textContent='…'; try { $('#chk').textContent = JSON.stringify(await api('/api/v1/check/'+c),null,1); } catch(e){ $('#chk').textContent=e.message; } }
+// ---------------------------------------------------------------- rules (MagiTrickle-style)
+let rulesSection = '';
+const ruleKinds = [
+  ['namespace:', 'Домен и все поддомены (namespace)'],
+  ['full:', 'Только этот домен (exact)'],
+  ['wildcard:', 'Шаблон: * любые символы, ? один символ'],
+  ['regexp:', 'Регулярное выражение (RE2)'],
+  ['keyword:', 'Любой домен со словом'],
+];
+async function renderRules(m){
+  const secs = await api('/api/v1/sections');
+  if (!secs.length) { m.innerHTML = '<div class="card">Секций нет. Добавьте секцию в конфиге или через API.</div>'; return; }
+  if (!secs.some(x => x.name === rulesSection)) rulesSection = secs[0].name;
+  const sec = secs.find(x => x.name === rulesSection);
+  window._sec = sec;
+  m.innerHTML = `<div class="card"><b>Правила доменов секции</b>
+    <div class="row"><select id="rsec" onchange="rulesSection=this.value;render()">${secs.map(x => `<option ${x.name===rulesSection?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
+    <small>${esc(sec.action)} / ${esc(sec.provider || 'singbox')}${sec.enabled ? '' : ' (отключена)'}</small></div>
+    <textarea id="rtxt" rows="12" style="width:100%;font:12px monospace" placeholder="youtube.com&#10;full:exact.example.com&#10;wildcard:cdn*.video.example&#10;keyword:tracker&#10;203.0.113.0/24">${esc((sec.domains||[]).join('\n'))}</textarea>
+    <small>${ruleKinds.map(([k,v]) => `<code>${k}</code> ${esc(v)}`).join('<br>')}<br>Без префикса — домен и поддомены; сети (CIDR) добавляются как есть.</small>
+    <div class="row"><button class=act data-a="rules-save">Сохранить и применить</button></div></div>`;
+}
+async function saveRules(){
+  const sec = window._sec; if (!sec) return;
+  sec.domains = $('#rtxt').value.split('\n').map(x => x.trim()).filter(Boolean);
+  try { await api('/api/v1/sections/' + encodeURIComponent(sec.name), 'PUT', sec); await api('/api/v1/reload', 'POST'); alert('Сохранено'); } catch(e){ alert(e.message); }
+}
+// ---------------------------------------------------------------- domain mapper (DomainMapper / HydraRoute)
+const mapFormats = ['plain','keenetic-cli','keenetic-bat','mikrotik','wireguard','openvpn','nft','ipset','json'];
+function renderMapper(m){
+  m.innerHTML = `<div class="card"><b>Маппер доменов → IP-маршруты</b>
+    <p><small>Домены резолвятся через все выбранные DNS и сворачиваются в подсети: статические маршруты Keenetic, MikroTik, WireGuard, OpenVPN.</small></p>
+    <textarea id="mdom" rows="8" style="width:100%;font:12px monospace" placeholder="по одному домену или подсети в строке"></textarea>
+    <div class="row"><input id="mlist" placeholder="URL списков https://… (через пробел)" style="flex:1"></div>
+    <div class="row">
+      <select id="magg"><option>24+32</option><option>24</option><option>16</option><option>host</option></select>
+      <select id="mfmt">${mapFormats.map(f => `<option>${f}</option>`).join('')}</select>
+      <input id="mif" placeholder="интерфейс (Wireguard0)">
+      <input id="mdns" placeholder="DNS через пробел (по умолчанию из конфига)">
+    </div>
+    <div class="row"><label><input type="checkbox" id="mcf"> без Cloudflare</label> <label><input type="checkbox" id="mv6"> IPv6</label></div>
+    <div class="row"><button class=act data-a="map-run">Построить</button> <button class=act data-a="map-apply">Добавить в Keenetic (ndmc)</button></div>
+    <pre id="mout"></pre></div>`;
+}
+async function runMapper(apply){
+  const out = $('#mout'); out.textContent = 'Резолвинг…';
+  const split = v => v.split(/\s+/).filter(Boolean);
+  try {
+    const r = await api('/api/v1/domainmap', 'POST', {
+      domains: $('#mdom').value.split('\n').map(x => x.trim()).filter(Boolean), lists: split($('#mlist').value), dns: split($('#mdns').value),
+      aggregate: $('#magg').value, format: $('#mfmt').value, interface: $('#mif').value, no_cloudflare: $('#mcf').checked, ipv6: $('#mv6').checked, apply });
+    out.textContent = `# маршрутов: ${r.routes}${r.failed && r.failed.length ? ', без адреса: ' + r.failed.join(', ') : ''}${r.applied ? ', добавлено в роутер: ' + r.applied : ''}\n` + r.output;
+  } catch(e){ out.textContent = e.message; }
+}
+// ---------------------------------------------------------------- config generator (NeoFit)
+function renderGenConfig(m){
+  m.innerHTML = `<div class="card"><b>Генератор конфига Xray / sing-box</b>
+    <div class="row"><input id="glink" placeholder="vless://… trojan://… ss://… hysteria2://…" style="flex:1">
+    <select id="gcore"><option>xray</option><option>sing-box</option></select></div>
+    <div class="row"><button class=act data-a="gen-run">Сгенерировать</button></div><pre id="gout"></pre></div>`;
+}
+async function runGenConfig(){
+  try { $('#gout').textContent = (await api('/api/v1/genconfig', 'POST', {link: $('#glink').value.trim(), core: $('#gcore').value})).config; }
+  catch(e){ $('#gout').textContent = e.message; }
+}
+// ---------------------------------------------------------------- KeeneticOS
+async function renderKeenetic(m){
+  const k = await api('/api/v1/keenetic');
+  m.innerHTML = `<div class="card"><b>KeeneticOS</b> ${k.available ? '<span class=ok>ndmc найден</span>' : '<span class=bad>ndmc не найден (не KeeneticOS)</span>'}
+    <table><tr><th>Интерфейс</th><th>Тип</th><th>Состояние</th><th>Описание</th></tr>` +
+    k.interfaces.map(i => `<tr><td>${esc(i.ID)}</td><td>${esc(i.Type)}</td><td class="${i.Connected?'ok':''}">${i.Connected?'up':'down'}</td><td>${esc(i.Description)}</td></tr>`).join('') + `</table></div>
+    <div class="card"><b>Proxy-интерфейс</b><p><small>Создаёт в Keenetic интерфейс Proxy, направленный на локальный прокси сервиса, чтобы использовать его в политиках доступа.</small></p>
+    <div class="row"><input id="kpn" value="Proxy0"><input id="kpp" value="4534" size="6">
+    <button class=act data-a="kn-proxy" data-apply="0">Показать команды</button>
+    <button class=act data-a="kn-proxy" data-apply="1">Применить</button></div><pre id="kout"></pre></div>`;
+}
+async function keeneticProxy(apply){
+  if (apply && !confirm('Выполнить команды ndmc и сохранить конфигурацию роутера?')) return;
+  try {
+    const r = await api('/api/v1/keenetic/proxy', 'POST', {name: $('#kpn').value, port: parseInt($('#kpp').value, 10), apply});
+    $('#kout').textContent = r.commands.join('\n') + (r.applied ? '\n# применено' : '');
+  } catch(e){ $('#kout').textContent = e.message; }
+}
 // ---------------------------------------------------------------- update
 const updStates = {idle:'', checking:'проверка…', downloading:'загрузка…', verifying:'проверка файла…', installing:'установка…', restarting:'перезапуск…', failed:'ошибка'};
 function showBadge(u){

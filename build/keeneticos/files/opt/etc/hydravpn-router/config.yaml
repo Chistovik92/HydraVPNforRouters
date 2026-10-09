@@ -1,0 +1,17 @@
+# HydraVPN for Router configuration (KeeneticOS, Entware). Unset values use
+# built-in defaults, see https://github.com/Chistovik92/HydraVPNforRouters/blob/main/configs/config.yaml
+settings:
+  dns_server:
+    - "77.88.8.8"
+    - "77.88.8.1"
+  bootstrap_dns_server:
+    - "77.88.8.8"
+    - "77.88.8.1"
+  source_network_interfaces:
+    - "br0"
+  config_path: "/opt/etc/hydravpn-router/sing-box/config.json"
+  cache_path: "/opt/var/run/hydravpn-router/cache.db"
+  log_level: "warn"
+
+sections: []
+subscription_urls: []

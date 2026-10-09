@@ -15,18 +15,29 @@ VERSION="${1:-$DEFAULT_VERSION}"
 VERSION="${VERSION#v}"
 OUTPUT_DIR="${2:-$ROOT_DIR/dist}"
 
-# target|GOOS|GOARCH|extra env
-TARGETS=(
-    "linux-amd64|linux|amd64|"
-    "linux-arm64|linux|arm64|"
-    "linux-armv7|linux|arm|GOARM=7"
-    "linux-armv6|linux|arm|GOARM=6"
-    "linux-mips|linux|mips|GOMIPS=softfloat"
-    "linux-mipsle|linux|mipsle|GOMIPS=softfloat"
-    "linux-mips64|linux|mips64|GOMIPS64=softfloat"
-    "linux-mips64le|linux|mips64le|GOMIPS64=softfloat"
-    "linux-386|linux|386|"
-    "windows-amd64|windows|amd64|"
+# arch|GOARCH|extra env: every architecture is compiled once ...
+ARCHES=(
+    "amd64|amd64|"
+    "arm64|arm64|"
+    "armv7|arm|GOARM=7"
+    "armv6|arm|GOARM=6"
+    "armv5|arm|GOARM=5"
+    "mips|mips|GOMIPS=softfloat"
+    "mipsle|mipsle|GOMIPS=softfloat"
+    "386|386|"
+)
+
+# ... and published under the name of every OS it is installed on:
+# hydravpn-router-<version>-<os>-<arch>. The files of one architecture are
+# identical; the OS in the name tells the installer and the web UI updater
+# which file belongs to which system.
+#   openwrt     OpenWrt (opkg/apk)
+#   keeneticos  KeeneticOS with Entware (/opt)
+#   routeros    MikroTik RouterOS 7 container (ARM, ARM64, x86)
+OS_ARCHES=(
+    "openwrt|amd64 arm64 armv7 armv6 mips mipsle 386"
+    "keeneticos|arm64 armv7 armv5 mips mipsle amd64"
+    "routeros|arm64 armv7 amd64"
 )
 
 BUILD_TAGS="netgo,osusergo"
@@ -48,51 +59,66 @@ echo "Building HydraVPN for Router $VERSION"
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
-for target in "${TARGETS[@]}"; do
-    IFS='|' read -r name goos goarch extra <<< "$target"
-    output_name="hydravpn-router-$VERSION-$name"
-    [[ "$goos" == "windows" ]] && output_name="$output_name.exe"
+OBJ_DIR="$(mktemp -d)"
+trap 'rm -rf "$OBJ_DIR"' EXIT
 
-    echo "Building $name..."
-    env_vars=("GOOS=$goos" "GOARCH=$goarch" "CGO_ENABLED=0")
+for target in "${ARCHES[@]}"; do
+    IFS='|' read -r arch goarch extra <<< "$target"
+    echo "Building $arch..."
+    env_vars=("GOOS=linux" "GOARCH=$goarch" "CGO_ENABLED=0")
     [[ -n "$extra" ]] && env_vars+=("$extra")
 
-    (cd "$ROOT_DIR" && env "${env_vars[@]}" go build \
-        -trimpath \
-        -buildvcs=false \
-        -tags "$BUILD_TAGS" \
-        -ldflags "$LDFLAGS" \
-        -o "$OUTPUT_DIR/$output_name" \
-        ./cmd/hydravpn-router)
+    (cd "$ROOT_DIR" && env "${env_vars[@]}" go build         -trimpath         -buildvcs=false         -tags "$BUILD_TAGS"         -ldflags "$LDFLAGS"         -o "$OBJ_DIR/$arch"         ./cmd/hydravpn-router)
 
-    # Optional: UPX=1 compresses Linux binaries (smaller on flash, slightly more RAM at start).
-    if [ "${UPX:-0}" = "1" ] && command -v upx >/dev/null 2>&1 && [ "$goos" = "linux" ]; then
-        upx --best --lzma -q "$OUTPUT_DIR/$output_name" >/dev/null || true
+    # Optional: UPX=1 compresses the binaries (smaller on flash, slightly more RAM at start).
+    if [ "${UPX:-0}" = "1" ] && command -v upx >/dev/null 2>&1; then
+        upx --best --lzma -q "$OBJ_DIR/$arch" >/dev/null || true
     fi
-
-    # "sha256sum" on Windows prints "*name" (binary mode); keep the plain form.
-    (cd "$OUTPUT_DIR" && sha256sum "$output_name" | sed 's/ \*/  /' >> checksums.txt)
-    echo "  -> $OUTPUT_DIR/$output_name"
 done
+
+for entry in "${OS_ARCHES[@]}"; do
+    os="${entry%%|*}"
+    for arch in ${entry#*|}; do
+        cp "$OBJ_DIR/$arch" "$OUTPUT_DIR/hydravpn-router-$VERSION-$os-$arch"
+    done
+done
+
+echo "Building windows-amd64..."
+(cd "$ROOT_DIR" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false     -tags "$BUILD_TAGS" -ldflags "$LDFLAGS" -o "$OUTPUT_DIR/hydravpn-router-$VERSION-windows-amd64.exe" ./cmd/hydravpn-router)
+
+# "sha256sum" on Windows prints "*name" (binary mode); keep the plain form.
+(cd "$OUTPUT_DIR" && for f in hydravpn-router-"$VERSION"-*; do
+    sha256sum "$f" | sed 's/ \*/  /' >> checksums.txt
+done)
+
+# Packages (.ipk for OpenWrt and KeeneticOS) are built from these binaries.
+if [ "${PACKAGES:-1}" = "1" ]; then
+    sh "$ROOT_DIR/scripts/build-packages.sh" "$VERSION" "$OUTPUT_DIR"
+fi
 
 cat > "$OUTPUT_DIR/RELEASE_NOTES.md" <<EOF
 # HydraVPN for Router $VERSION
 
-Install or update on the router:
+Install or update on the router (OpenWrt, KeeneticOS with Entware):
 
     curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
+
+MikroTik RouterOS 7 (container):
+
+    /tool fetch url="https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.rsc" dst-path=hydravpn-install.rsc
+    /import hydravpn-install.rsc
+
+Files are named after the OS they are installed on:
+\`hydravpn-router-$VERSION-<openwrt|keeneticos|routeros>-<arch>\` (binary),
+\`hydravpn-router-<openwrt|keeneticos>_${VERSION}_<arch>.ipk\` (package),
+\`hydravpn-router-routeros-$VERSION-<arch>.tar\` (container image).
 
 ### Binaries
 EOF
 
-for target in "${TARGETS[@]}"; do
-    IFS='|' read -r name goos _ _ <<< "$target"
-    output_name="hydravpn-router-$VERSION-$name"
-    [[ "$goos" == "windows" ]] && output_name="$output_name.exe"
-    if [[ -f "$OUTPUT_DIR/$output_name" ]]; then
-        size=$(du -h "$OUTPUT_DIR/$output_name" | cut -f1)
-        echo "- \`$output_name\` ($size)" >> "$OUTPUT_DIR/RELEASE_NOTES.md"
-    fi
+for f in "$OUTPUT_DIR"/hydravpn-router-"$VERSION"-*; do
+    size=$(du -h "$f" | cut -f1)
+    echo "- \`$(basename "$f")\` ($size)" >> "$OUTPUT_DIR/RELEASE_NOTES.md"
 done
 
 echo ""

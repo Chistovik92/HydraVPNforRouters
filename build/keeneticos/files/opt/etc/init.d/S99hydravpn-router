@@ -1,0 +1,9 @@
+#!/bin/sh
+ENABLED=yes
+PROCS=hydravpn-router
+ARGS="start -c /opt/etc/hydravpn-router/config.yaml --runtime-dir /opt/var/run/hydravpn-router"
+PREARGS=""
+DESC="HydraVPN for Router"
+PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+. /opt/etc/init.d/rc.func

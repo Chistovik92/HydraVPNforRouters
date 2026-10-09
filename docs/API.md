@@ -59,11 +59,22 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
      http://192.168.1.1:8088/api/v1/subscriptions
 ```
 
+## Tools (1.2.5)
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/v1/domainmap` | `{"domains":[…],"lists":["https://…"],"dns":[…],"aggregate":"24+32","format":"keenetic-cli","interface":"Wireguard0","name":"hydravpn","no_cloudflare":true,"ipv6":false,"apply":false}` | `{"routes":N,"failed":[…],"skipped":N,"output":"…","applied":N}`. `domains` use the `.lst` syntax (`namespace:`, `full:`, `wildcard:`, `regexp:`, `keyword:`, subnets). `lists` must be http(s) URLs; at most 5000 domains. `apply` adds the routes through `ndmc` (KeeneticOS only). |
+| POST | `/api/v1/genconfig` | `{"link":"vless://…","core":"xray"}` (`core`: `xray` or `sing-box`) | `{"config":"…"}` |
+| GET | `/api/v1/keenetic` | | `{"available":bool,"interfaces":[{ID,Type,Description,Connected}]}` |
+| POST | `/api/v1/keenetic/proxy` | `{"name":"Proxy0","port":4534,"apply":false}` | `{"commands":[…],"applied":bool}` |
+
+Sections accept `domains` (inline rules) and `rules[]` accept `domain_regex` and `domain_wildcard`.
+
 ## Updating the service
 
 `POST /api/v1/update` answers `202` at once and works in the background; follow it with `GET /api/v1/update` (`state`: `checking` → `downloading` → `verifying` → `installing` → `restarting`, or `failed` with `error`).
 
-1. The release is `latest` on GitHub (pre-releases only with an explicit `version`). The asset is the one `install.sh` would pick: `hydravpn-router-<version>-linux-<arch>`.
+1. The release is `latest` on GitHub (pre-releases only with an explicit `version`). The asset is the one `install.sh` would pick: `hydravpn-router-<version>-<openwrt|keeneticos>-<arch>` (releases before 1.2.5: `-linux-<arch>`).
 2. Its SHA-256 must match `checksums.txt` of the same release; a release without an entry is refused. The file is written next to the binary as `<binary>.new` after checking the free space.
 3. The new file is started with `version` and must report the expected version, so a build for another CPU is never installed.
 4. It replaces the binary with an atomic rename; the service stops normally (firewall rules removed, sing-box stopped) and re-executes itself with the same PID. The API is unreachable for a few seconds. The web UI waits until `/api/v1/version` reports the new version.

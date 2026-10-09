@@ -359,3 +359,32 @@ func TestAPIChangesKeepCommentsAndIndentation(t *testing.T) {
 		t.Errorf("after delete:\n%s", out)
 	}
 }
+
+func TestToolEndpoints(t *testing.T) {
+	ts, _, _, tok := setup(t)
+
+	code, body := call(t, ts, tok, "POST", "/api/v1/domainmap", map[string]interface{}{
+		"domains": []string{"203.0.113.0/24", "198.51.100.7"}, "format": "keenetic-cli", "interface": "Wireguard0",
+	})
+	if code != 200 || !strings.Contains(body, "ip route 203.0.113.0 255.255.255.0 Wireguard0 auto") || !strings.Contains(body, "198.51.100.7 255.255.255.255") {
+		t.Errorf("domainmap: %d %s", code, body)
+	}
+	if code, _ := call(t, ts, tok, "POST", "/api/v1/domainmap", map[string]interface{}{"lists": []string{"/etc/passwd"}}); code != 400 {
+		t.Errorf("local file lists must be refused, got %d", code)
+	}
+	if code, _ := call(t, ts, tok, "POST", "/api/v1/domainmap", map[string]interface{}{"domains": []string{"203.0.113.0/24"}, "format": "keenetic-cli", "interface": "x; reboot", "apply": true}); code != 400 {
+		t.Errorf("bad interface must be refused, got %d", code)
+	}
+
+	code, body = call(t, ts, tok, "POST", "/api/v1/genconfig", map[string]string{"link": "trojan://pw@example.com:443?sni=example.com#n", "core": "xray"})
+	if code != 200 || !strings.Contains(body, "trojan") {
+		t.Errorf("genconfig: %d %s", code, body)
+	}
+	code, body = call(t, ts, tok, "POST", "/api/v1/keenetic/proxy", map[string]interface{}{})
+	if code != 200 || !strings.Contains(body, "interface Proxy0 proxy upstream 127.0.0.1 4534") || !strings.Contains(body, `"applied":false`) {
+		t.Errorf("keenetic proxy: %d %s", code, body)
+	}
+	if code, _ := call(t, ts, tok, "GET", "/api/v1/keenetic", nil); code != 200 {
+		t.Errorf("keenetic: %d", code)
+	}
+}

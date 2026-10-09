@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -91,8 +90,11 @@ func URLs(cfg *config.Config) map[string]time.Duration {
 }
 
 type entry struct {
-	Domains []string
+	Domains []string // domain and all subdomains
 	CIDRs   []string
+	Exact   []string // exactly this domain
+	Keyword []string
+	Regex   []string
 	Updated time.Time
 	Next    time.Time
 	Err     string
@@ -201,6 +203,18 @@ func (m *Manager) ListEntries(u string) (domains, cidrs []string, ok bool) {
 	return e.Domains, e.CIDRs, true
 }
 
+// ListRules returns every kind of rule of a downloaded list: suffix, exact,
+// keyword and regular-expression domains plus subnets.
+func (m *Manager) ListRules(u string) (Entries, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e := m.lists[u]
+	if e == nil || e.Updated.IsZero() {
+		return Entries{}, false
+	}
+	return Entries{Suffix: e.Domains, Exact: e.Exact, Keyword: e.Keyword, Regex: e.Regex, CIDR: e.CIDRs}, true
+}
+
 // GetStatus reports the state of every list.
 func (m *Manager) GetStatus() map[string]interface{} {
 	m.mu.RLock()
@@ -270,9 +284,12 @@ func (m *Manager) fetch(ctx context.Context, u string, interval time.Duration) b
 		m.log("error", "list %s: %v", config.MaskURL(u), err)
 		return false
 	}
-	domains, cidrs := Parse(body)
-	changed := len(domains) != len(e.Domains) || len(cidrs) != len(e.CIDRs) || e.Updated.IsZero()
+	p := ParseEntries(body)
+	domains, cidrs := p.Suffix, p.CIDR
+	changed := len(domains) != len(e.Domains) || len(cidrs) != len(e.CIDRs) ||
+		len(p.Exact) != len(e.Exact) || len(p.Keyword) != len(e.Keyword) || len(p.Regex) != len(e.Regex) || e.Updated.IsZero()
 	e.Domains, e.CIDRs, e.Err = domains, cidrs, ""
+	e.Exact, e.Keyword, e.Regex = p.Exact, p.Keyword, p.Regex
 	e.Updated = time.Now()
 	e.Next = e.Updated.Add(interval)
 	m.saveCache(u, body)
@@ -302,47 +319,11 @@ func (m *Manager) download(ctx context.Context, u string) (string, error) {
 	return string(b), err
 }
 
-// Parse splits a list into domains and IPv4/IPv6 subnets. Comments (#) and
-// blank lines are ignored; "domain:", "full:" and "*." prefixes and
-// trailing dots are stripped.
+// Parse splits a list into domains (with subdomains) and IPv4/IPv6 subnets.
+// It is ParseEntries without the exact, keyword and regexp kinds.
 func Parse(body string) (domains, cidrs []string) {
-	seenD, seenC := map[string]bool{}, map[string]bool{}
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if i := strings.Index(line, "#"); i >= 0 {
-			line = strings.TrimSpace(line[:i])
-		}
-		if line == "" || strings.HasPrefix(line, "//") {
-			continue
-		}
-		if ip := net.ParseIP(line); ip != nil {
-			if ip.To4() != nil {
-				line += "/32"
-			} else {
-				line += "/128"
-			}
-		}
-		if _, _, err := net.ParseCIDR(line); err == nil {
-			if !seenC[line] {
-				seenC[line] = true
-				cidrs = append(cidrs, line)
-			}
-			continue
-		}
-		for _, p := range []string{"domain:", "full:", "*."} {
-			line = strings.TrimPrefix(line, p)
-		}
-		line = strings.TrimSuffix(strings.TrimPrefix(line, "."), ".")
-		if line == "" || strings.ContainsAny(line, " /:\t") || !strings.Contains(line, ".") {
-			continue
-		}
-		line = strings.ToLower(line)
-		if !seenD[line] {
-			seenD[line] = true
-			domains = append(domains, line)
-		}
-	}
-	return
+	e := ParseEntries(body)
+	return e.Suffix, e.CIDR
 }
 
 func (m *Manager) cachePath(u string) string {
@@ -355,7 +336,8 @@ func (m *Manager) loadCache(u string, e *entry) {
 	if err != nil {
 		return
 	}
-	e.Domains, e.CIDRs = Parse(string(data))
+	p := ParseEntries(string(data))
+	e.Domains, e.CIDRs, e.Exact, e.Keyword, e.Regex = p.Suffix, p.CIDR, p.Exact, p.Keyword, p.Regex
 	if st, err := os.Stat(m.cachePath(u)); err == nil {
 		e.Updated = st.ModTime()
 	}

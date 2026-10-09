@@ -56,6 +56,12 @@ type ListSource interface {
 	ListEntries(url string) (domains, cidrs []string, ok bool)
 }
 
+// RuleSource is a ListSource that also serves exact, keyword and regexp
+// domain rules; the builder uses it when available.
+type RuleSource interface {
+	ListRules(url string) (lists.Entries, bool)
+}
+
 type options struct{ lists ListSource }
 
 // Option customizes ConfigFromSettings.
@@ -321,6 +327,9 @@ func (b *builder) buildSection(sec config.Section) {
 		}
 	}
 
+	for _, r := range inlineDomainRules(sec.Domains) {
+		add(r)
+	}
 	for _, name := range sec.CommunityLists {
 		for _, r := range b.listRules(name) {
 			add(r)
@@ -356,6 +365,13 @@ func (b *builder) addConfigRule(sec config.Section, target string, r config.Rule
 	setList("domain", r.Domain)
 	setList("domain_suffix", r.DomainSuffix)
 	setList("domain_keyword", r.DomainKeyword)
+	regex := append([]string(nil), r.DomainRegex...)
+	for _, w := range r.DomainWildcard {
+		if re := lists.WildcardToRegexp(w); re != "" {
+			regex = append(regex, re)
+		}
+	}
+	setList("domain_regex", regex)
 	setList("ip_cidr", r.Destination)
 	setList("source_ip_cidr", r.Source)
 	if r.Protocol != "" {
@@ -518,24 +534,56 @@ func (b *builder) localList(u string, invert bool) []Rule {
 		b.warn("list %s: not downloaded yet", config.MaskURL(u))
 		return nil
 	}
-	domains, cidrs, ok := b.lists.ListEntries(u)
+	var e lists.Entries
+	var ok bool
+	if rs, isRS := b.lists.(RuleSource); isRS {
+		e, ok = rs.ListRules(u)
+	} else {
+		e.Suffix, e.CIDR, ok = b.lists.ListEntries(u)
+	}
 	if !ok {
 		b.warn("list %s: not downloaded yet", config.MaskURL(u))
 		return nil
 	}
-	var rules []Rule
-	if len(domains) > 0 {
-		rules = append(rules, Rule{"domain_suffix": domains})
-	}
-	if len(cidrs) > 0 {
-		rules = append(rules, Rule{"ip_cidr": cidrs})
-	}
+	rules := entryRules(e)
 	if invert {
 		for _, r := range rules {
 			r["invert"] = true
 		}
 	}
 	return rules
+}
+
+// BuildOutbound converts a parsed proxy link into a sing-box outbound.
+func BuildOutbound(info subscription.OutboundInfo) (map[string]interface{}, error) {
+	ob, err := buildOutbound(info)
+	return ob, err
+}
+
+// entryRules converts parsed list entries into sing-box rules, one per kind.
+func entryRules(e lists.Entries) []Rule {
+	var rules []Rule
+	for _, kv := range []struct {
+		key  string
+		vals []string
+	}{
+		{"domain_suffix", e.Suffix}, {"domain", e.Exact}, {"domain_keyword", e.Keyword},
+		{"domain_regex", e.Regex}, {"ip_cidr", e.CIDR},
+	} {
+		if len(kv.vals) > 0 {
+			rules = append(rules, Rule{kv.key: kv.vals})
+		}
+	}
+	return rules
+}
+
+// inlineDomainRules converts a section's "domains:" entries (same syntax as a
+// .lst list: namespace:, full:, keyword:, wildcard:, regexp:, subnets).
+func inlineDomainRules(entries []string) []Rule {
+	if len(entries) == 0 {
+		return nil
+	}
+	return entryRules(lists.ParseEntries(strings.Join(entries, "\n")))
 }
 
 // proxyGroup builds the selector (and url-test) outbounds of a section and

@@ -30,14 +30,20 @@
 - **Clash API Compatible** — works with Clash Dashboard, YACD, and other Clash clients
 - **Веб-интерфейс и JSON API** — встроенные, работают на всех платформах
 - **Web UI and JSON API** — built in, the same on every platform
+- **Типы правил доменов** (namespace, exact, wildcard, regexp, keyword) — как в MagiTrickle
+- **Domain rule types** (namespace, exact, wildcard, regexp, keyword) — as in MagiTrickle
+- **`domainmap`** — домены → IP-маршруты (/24, /16, без Cloudflare; Keenetic, MikroTik, WireGuard, OpenVPN, nft) — как в DomainMapper
+- **`domainmap`** — domains to IP routes (/24, /16, no Cloudflare; Keenetic, MikroTik, WireGuard, OpenVPN, nft) — as in DomainMapper
+- **Keenetic через `ndmc`**, генератор конфигов Xray/sing-box — как в HydraRoute и NeoFit: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)
+- **Keenetic via `ndmc`**, Xray/sing-box config generator — as in HydraRoute and NeoFit
 
 ### Поддержка платформ / Platform Support
 
 | Платформа / Platform | Формат пакета / Package Format | Веб-UI / Web UI | Init система / Init System | Статус / Status |
 |----------|---------------|--------|-------------|--------|
-| OpenWRT 21.02+ | IPK/APK | встроенный / built-in | procd | ✅ Полная / Full |
-| KeeneticOS 3.7+ | KNP/Entware | Native | ndm/Entware | ✅ Полная / Full |
-| RouterOS 7+ | NPK/Docker | Native | systemd/container | ✅ Полная / Full |
+| OpenWRT 21.02+ | `openwrt` IPK (APK — через install.sh) | встроенный / built-in | procd | ✅ Полная / Full |
+| KeeneticOS 3.7+ | `keeneticos` IPK (Entware) | Native | ndm/Entware | ✅ Полная / Full |
+| RouterOS 7+ | `routeros` TAR (контейнер / container) | Native | systemd/container | ✅ Полная / Full |
 
 ## Архитектура / Architecture
 
@@ -64,10 +70,10 @@
 
 Актуальная версия — на странице [Releases](https://github.com/Chistovik92/HydraVPNforRouters/releases) (`hydravpn-router version` показывает установленную). Подробности — в [INSTALL.md](INSTALL.md).
 
-### OpenWRT, KeeneticOS (Entware), Linux
+### OpenWrt, KeeneticOS (Entware)
 
-Скрипт определяет платформу и архитектуру, скачивает бинарник из GitHub Releases, ставит сервис и сохраняет существующий конфиг.
-The script detects the platform and architecture, downloads the binary from GitHub Releases, installs the service and keeps an existing config.
+Скрипт определяет ОС и архитектуру, скачивает файл `hydravpn-router-<ver>-<openwrt|keeneticos>-<arch>` из GitHub Releases, ставит сервис и сохраняет существующий конфиг.
+The script detects the OS and architecture, downloads `hydravpn-router-<ver>-<openwrt|keeneticos>-<arch>` from GitHub Releases, installs the service and keeps an existing config.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
@@ -79,10 +85,18 @@ curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main
 curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/update.sh | sh
 ```
 
-### MikroTik RouterOS
+### MikroTik RouterOS 7 (container)
 
-RouterOS 7 с пакетом `container`: образ собирается из [Dockerfile](Dockerfile) (`make docker-build`). См. [INSTALL.md](INSTALL.md).
-RouterOS 7 with the `container` package: build the image from the [Dockerfile](Dockerfile) (`make docker-build`). See [INSTALL.md](INSTALL.md).
+Тоже одной ссылкой на репозиторий — скрипт `install.rsc` скачивает образ `hydravpn-router-routeros-<ver>-<arch>.tar`, создаёт сеть контейнера и запускает его:
+Also by repository link — `install.rsc` downloads the `hydravpn-router-routeros-<ver>-<arch>.tar` image, creates the container network and starts it:
+
+```
+/tool fetch url="https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.rsc" dst-path=hydravpn-install.rsc
+/import hydravpn-install.rsc
+```
+
+Пакеты `.ipk` (`hydravpn-router-openwrt_…`, `hydravpn-router-keeneticos_…`), занимаемое место и подробности — в [INSTALL.md](INSTALL.md), настройка RouterOS — в [docs/MIKROTIK.md](docs/MIKROTIK.md).
+Размер: бинарник 10.5–12.4 MiB, пакет `.ipk` 4.1–4.7 MiB (без `sing-box`).
 
 ## Конфигурация / Configuration
 

@@ -29,6 +29,7 @@ func TestVersionIsConsistent(t *testing.T) {
 		{"INSTALL.md", `Version\*\*: (\S+)`},
 		{"CHANGELOG.md", `(?m)^## (\d+\.\d+\.\d+)`}, // first entry is the latest
 		{"scripts/install.sh", `--version (\d+\.\d+\.\d+)`},
+		{"scripts/install.rsc", `(?m)^:local ver "(\d+\.\d+\.\d+)"`},
 	}
 	for _, c := range checks {
 		m := regexp.MustCompile(c.pattern).FindStringSubmatch(read(c.file))

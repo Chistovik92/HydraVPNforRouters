@@ -1,0 +1,4 @@
+#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+[ -x /opt/etc/init.d/S99hydravpn-router ] && /opt/etc/init.d/S99hydravpn-router stop
+exit 0

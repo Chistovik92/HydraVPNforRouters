@@ -19,6 +19,7 @@ import (
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
 	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
+	"github.com/Chistovik92/hydravpn-router/internal/domainmap"
 	"github.com/Chistovik92/hydravpn-router/internal/firewall"
 	"github.com/Chistovik92/hydravpn-router/internal/logx"
 	"github.com/Chistovik92/hydravpn-router/internal/mgmt"
@@ -56,6 +57,9 @@ var CLI struct {
 	Pair      PairCmd      `cmd:"" help:"Print the link that adds this router to the HydraVPN app"`
 	Selftest  SelftestCmd  `cmd:"" help:"Check this router: nft --check, sing-box check, kernel tproxy support"`
 	Radar     RadarCmd     `cmd:"" help:"Link to an account in the Radar bot and fetch the subscriptions issued there"`
+	DomainMap DomainMapCmd `cmd:"" name:"domainmap" help:"Resolve domains to IP routes (Keenetic, MikroTik, WireGuard, OpenVPN, nft ...)"`
+	GenConfig GenConfigCmd `cmd:"" name:"genconfig" help:"Build an Xray or sing-box config from a vless:// trojan:// ss:// link"`
+	Keenetic  KeeneticCmd  `cmd:"" name:"keenetic" help:"KeeneticOS helpers (ndmc): interfaces, proxy interface"`
 }
 
 type StartCmd struct {
@@ -599,6 +603,7 @@ func main() {
 			"config_file": defaultConfigFile(),
 			"runtime_dir": defaultRuntimeDir(),
 			"checks":      strings.Join(diagnostics.CheckNames(), ", "),
+			"formats":     strings.Join(domainmap.Formats, ", "),
 		},
 		kong.Bind(&CLI.Globals),
 	)

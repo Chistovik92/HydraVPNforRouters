@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/lists"
 	"github.com/Chistovik92/hydravpn-router/internal/subscription"
 )
 
@@ -361,5 +362,58 @@ func TestCacheDirectoryIsCreated(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "missing", "run")); err != nil {
 		t.Errorf("cache directory was not created: %v", err)
+	}
+}
+
+type fakeRuleLists map[string]lists.Entries
+
+func (f fakeRuleLists) ListEntries(u string) ([]string, []string, bool) {
+	e, ok := f[u]
+	return e.Suffix, e.CIDR, ok
+}
+
+func (f fakeRuleLists) ListRules(u string) (lists.Entries, bool) {
+	e, ok := f[u]
+	return e, ok
+}
+
+func TestDomainRuleKinds(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sections = []config.Section{{
+		Name: "main", Enabled: true, SelectorProxyLinks: []string{"trojan://p@h.example:443#n"},
+		CommunityLists: []string{"https://x.example/k.lst"},
+		Domains:        []string{"namespace:inline.example", "wildcard:cdn*.inline.example", "keyword:tracker"},
+	}}
+	cfg.Rules = []config.Rule{{Section: "main", Enabled: true, DomainWildcard: []string{"a?.rule.example"}, DomainRegex: []string{`^x\d\.rule$`}}}
+	src := fakeRuleLists{"https://x.example/k.lst": {Exact: []string{"only.example"}, Regex: []string{`^r\.example$`}}}
+	c := ConfigFromSettings(cfg, nil, WithLists(src))
+	got := map[string][]string{}
+	for _, r := range c.Route.Rules {
+		if r["outbound"] != "main" {
+			continue
+		}
+		for _, k := range []string{"domain", "domain_suffix", "domain_keyword", "domain_regex"} {
+			if v, ok := r[k].([]string); ok {
+				got[k] = append(got[k], v...)
+			}
+		}
+	}
+	want := map[string]string{
+		"domain":         "only.example",
+		"domain_suffix":  "inline.example",
+		"domain_keyword": "tracker",
+		"domain_regex":   `^a.\.rule\.example$`,
+	}
+	for k, w := range want {
+		found := false
+		for _, v := range got[k] {
+			found = found || v == w
+		}
+		if !found {
+			t.Errorf("%s: %q missing in %v", k, w, got[k])
+		}
+	}
+	if len(got["domain_regex"]) < 4 {
+		t.Errorf("domain_regex: %v", got["domain_regex"])
 	}
 }

@@ -8,10 +8,11 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-#   sh install.sh --yes --version 1.2.4
+#   sh install.sh --yes --version 1.2.5
 #
-# MikroTik RouterOS has no POSIX shell: use the container instructions in
-# INSTALL.md instead.
+# Release files are named after the OS: hydravpn-router-<ver>-openwrt-<arch>
+# (OpenWrt), -keeneticos-<arch> (KeeneticOS, Entware). MikroTik RouterOS has
+# no POSIX shell: it uses scripts/install.rsc (see INSTALL.md).
 
 set -eu
 
@@ -150,7 +151,9 @@ go_arch() {
         i386|i486|i586|i686) echo 386 ;;
         aarch64|arm64) echo arm64 ;;
         armv7*|armv8l) echo armv7 ;;
-        armv6*|armv5*) echo armv6 ;;
+        armv6*) echo armv6 ;;
+        # Entware armv5sf devices have no FPU: the armv6 build would crash there
+        armv5*) if [ "$PLATFORM" = "keenetic-entware" ]; then echo armv5; else echo armv6; fi ;;
         mips64*) if is_little_endian; then echo mips64le; else echo mips64; fi ;;
         # uname reports "mips" for both endiannesses (e.g. MT7621 is little-endian)
         mips*) if is_little_endian; then echo mipsle; else echo mips; fi ;;
@@ -184,6 +187,7 @@ detect_platform() {
             RUNTIME_DIR="/var/run/hydravpn-router"
             SERVICE="/etc/init.d/hydravpn-router"
             LAN_IF="br-lan"
+            ASSET_OS="openwrt"
             ;;
         keenetic-entware)
             BIN="/opt/bin/hydravpn-router"
@@ -191,6 +195,7 @@ detect_platform() {
             RUNTIME_DIR="/opt/var/run/hydravpn-router"
             SERVICE="/opt/etc/init.d/S99hydravpn-router"
             LAN_IF="br0"
+            ASSET_OS="keeneticos"
             ;;
         linux)
             BIN="/usr/local/bin/hydravpn-router"
@@ -198,6 +203,8 @@ detect_platform() {
             RUNTIME_DIR="/var/run/hydravpn-router"
             SERVICE="systemd"
             LAN_IF="eth0"
+            # Not a router OS: the same static binary as the OpenWrt build.
+            ASSET_OS="openwrt"
             ;;
         docker)
             BIN=""; CONFIG_DIR="/etc/hydravpn-router"; RUNTIME_DIR=""; SERVICE=""; LAN_IF="eth0"
@@ -238,13 +245,20 @@ get_installed_version() {
 # ---------------------------------------------------------------- install
 
 download_binary() {
-    asset="hydravpn-router-${LATEST_VERSION}-linux-${ARCH}"
+    # Release files are named after the OS: hydravpn-router-<ver>-<os>-<arch>.
+    # Releases before 1.2.5 only have hydravpn-router-<ver>-linux-<arch>.
+    asset="hydravpn-router-${LATEST_VERSION}-${ASSET_OS}-${ARCH}"
     url="${RELEASE_BASE}/v${LATEST_VERSION}/${asset}"
     TMP_BIN="${BIN}.new"
 
     log_info "Downloading $url"
     mkdir -p "$(dirname "$BIN")"
-    fetch "$url" "$TMP_BIN" || { rm -f "$TMP_BIN"; die "Download failed: $url"; }
+    if ! fetch "$url" "$TMP_BIN" 2>/dev/null; then
+        asset="hydravpn-router-${LATEST_VERSION}-linux-${ARCH}"
+        url="${RELEASE_BASE}/v${LATEST_VERSION}/${asset}"
+        log_info "Not found, trying $url"
+        fetch "$url" "$TMP_BIN" || { rm -f "$TMP_BIN"; die "Download failed: $url"; }
+    fi
 
     if command -v sha256sum >/dev/null 2>&1; then
         sums=$(fetch_stdout "${RELEASE_BASE}/v${LATEST_VERSION}/checksums.txt" 2>/dev/null) || sums=""
@@ -447,6 +461,8 @@ do_install_binary() {
     fi
     mv -f "$TMP_BIN" "$BIN"
     log_ok "Installed $BIN ($LATEST_VERSION)"
+    # Short command, like "nf" of NeoFit
+    ln -sf "$BIN" "$(dirname "$BIN")/hydra" 2>/dev/null || true
 
     install_dependencies
     write_default_config
@@ -485,8 +501,8 @@ Options:
   -f, --force          Reinstall even if the version is current
   -h, --help           Show this help
 
-Supported: OpenWrt, Keenetic (Entware), generic Linux (systemd), Docker.
-MikroTik RouterOS: see INSTALL.md (container).
+Supported: OpenWrt, KeeneticOS (Entware), generic Linux (systemd), Docker.
+MikroTik RouterOS: scripts/install.rsc, see INSTALL.md (container).
 EOF
 }
 
