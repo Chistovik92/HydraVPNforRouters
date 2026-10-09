@@ -25,5 +25,6 @@ sed -i "s/Version   = \"$OLD\"/Version   = \"$NEW\"/" "$ROOT/pkg/version/version
 # Applied twice: adjacent matches ("1.2.3 … 1.2.3") share a boundary character.
 sed -i -E "$BOUNDED; $BOUNDED" "$ROOT/INSTALL.md"
 sed -i "s/--version $OLD_RE/--version $NEW/" "$ROOT/scripts/install.sh"
+sed -i "s/^:local ver \"$OLD_RE\"/:local ver \"$NEW\"/; s/hydraVersion \"$OLD_RE\"/hydraVersion \"$NEW\"/" "$ROOT/scripts/install.rsc"
 
 echo "version: $OLD -> $NEW"

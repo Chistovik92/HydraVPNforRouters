@@ -164,7 +164,11 @@ type Section struct {
 	OutboundDetourSection        string   `yaml:"outbound_detour_section" json:"outbound_detour_section"`
 	SortByLatency                bool     `yaml:"sort_by_latency" json:"sort_by_latency"`
 	FullyRoutedIPs               []string `yaml:"fully_routed_ips" json:"fully_routed_ips"`
-	OutboundJsons                []string `yaml:"outbound_jsons" json:"outbound_jsons"`
+	// Domains are inline domain rules of the same syntax as a .lst list:
+	// namespace:example.com, full:a.example, keyword:ads, wildcard:cdn*.x.com,
+	// regexp:^ads?\d+\., subnets.
+	Domains       []string `yaml:"domains" json:"domains"`
+	OutboundJsons []string `yaml:"outbound_jsons" json:"outbound_jsons"`
 }
 
 // SectionInterface represents an interface bound to a section
@@ -280,9 +284,13 @@ type Rule struct {
 	Domain        []string `yaml:"domain" json:"domain"`
 	DomainSuffix  []string `yaml:"domain_suffix" json:"domain_suffix"`
 	DomainKeyword []string `yaml:"domain_keyword" json:"domain_keyword"`
-	GeoIP         []string `yaml:"geoip" json:"geoip"`
-	GeoSite       []string `yaml:"geosite" json:"geosite"`
-	Invert        bool     `yaml:"invert" json:"invert"`
+	// DomainRegex are RE2 expressions; DomainWildcard use "*" (any
+	// characters) and "?" (one character).
+	DomainRegex    []string `yaml:"domain_regex" json:"domain_regex"`
+	DomainWildcard []string `yaml:"domain_wildcard" json:"domain_wildcard"`
+	GeoIP          []string `yaml:"geoip" json:"geoip"`
+	GeoSite        []string `yaml:"geosite" json:"geosite"`
+	Invert         bool     `yaml:"invert" json:"invert"`
 }
 
 // RuleSet represents a rule set

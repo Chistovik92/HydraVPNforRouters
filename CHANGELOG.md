@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.5
+
+Ideas of four projects added (details and limits: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)) and release files named after the OS.
+
+- **Domain rule types (MagiTrickle).** Lists, `sections[].domains` and `rules[]` understand `namespace:` (domain and subdomains), `full:`/`exact:` (only this domain), `wildcard:` (`*`, `?`), `regexp:` (RE2) and `keyword:`; a bare entry with `*`/`?` is a wildcard. New `rules[].domain_regex` / `domain_wildcard`. `full:` used to be treated as a suffix; it is now exact.
+- **`hydravpn-router domainmap` (DomainMapper).** Resolves domains through all chosen DNS servers, merges the answers, drops placeholder addresses and optionally Cloudflare ranges, groups into /24, /16 or /24+/32 and prints Keenetic CLI/BAT, MikroTik, WireGuard, OpenVPN, nftables, ipset, plain or JSON; `--split`, `--exec`. API: `POST /api/v1/domainmap`.
+- **Keenetic via ndmc (HydraRoute, NeoFit).** `domainmap --apply-keenetic IFACE` adds static routes (`--dry-run` prints the commands); `hydravpn-router keenetic interfaces|proxy`; API `GET /api/v1/keenetic`, `POST /api/v1/keenetic/proxy`. Not verified on a router.
+- **`hydravpn-router genconfig` (NeoFit).** Xray or sing-box config from a vless/vmess/trojan/ss link (Hysteria2 for sing-box only). API: `POST /api/v1/genconfig`.
+- **Web UI:** tabs "Правила" (domain rules of a section), "Маппер", "Конфиг", "Keenetic".
+- **Release files named after the OS.** Binaries `hydravpn-router-<ver>-<openwrt|keeneticos|routeros>-<arch>`; packages `hydravpn-router-openwrt_<ver>_<arch>.ipk` and `hydravpn-router-keeneticos_<ver>_<entware arch>.ipk` (new: Entware package with the NDM hook, armv5/armv7/aarch64/mips/mipsel/x64); RouterOS container images `hydravpn-router-routeros-<ver>-<arm64|armv7|amd64>.tar`. The generic `linux` files are gone; `install.sh` and the web UI updater pick the file of the detected OS and fall back to `linux` for releases before 1.2.5.
+- **Install by repository link on every OS.** `install.sh` for OpenWrt and KeeneticOS (adds the `hydra` short command; armv5 Entware devices get a soft-float build), and the new `scripts/install.rsc` for RouterOS (`/tool fetch` + `/import`: image download, veth, bridge, NAT, container).
+- `.ipk` packages are built by `scripts/build-packages.sh` without Docker and the OpenWrt SDK; the release notes list package and installed sizes (`sizes.md`).
+
 ## 1.2.4
 
 - **Update from the web UI.** The service updates itself to a newer release: the "Обновление" card on the status page (and a badge in the header when a release is out), `GET /api/v1/update`, `POST /api/v1/update/check`, `POST /api/v1/update` (optionally `{"version":"x.y.z"}`, also to roll back). The binary for this platform is downloaded from GitHub Releases, its SHA-256 must match the release's `checksums.txt` (a release without a checksum is refused), and the new file must run and report the expected version before it replaces the old one (atomic rename, free space checked first). Then the service stops normally (rules removed, sing-box stopped) and re-executes the new binary under the same PID, so procd, systemd and the Entware script keep tracking it. New releases are looked for a minute after start and then every `component_update_check_interval` (with `component_update_check_enabled`); nothing is installed without a request. `download_components_via_proxy` applies. Not available in containers (pull the new image). On Keenetic, Entware's CA bundle is used for HTTPS.

@@ -1,4 +1,5 @@
-# Container image for Docker hosts and MikroTik RouterOS containers.
+# Container image for MikroTik RouterOS containers (hydravpn-router-routeros-<ver>-<arch>.tar)
+# and Docker hosts.
 #
 #   docker build -t ghcr.io/chistovik92/hydravpn-router:<version> .
 #
@@ -6,15 +7,17 @@
 
 ARG SING_BOX_IMAGE=ghcr.io/sagernet/sing-box:v1.14.2
 
-FROM golang:alpine AS build
+FROM --platform=$BUILDPLATFORM golang:alpine AS build
 ARG VERSION=
+ARG TARGETARCH
+ARG TARGETVARIANT
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN set -eu; \
     V="${VERSION:-$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' pkg/version/version.go)}"; \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags netgo,osusergo \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" go build -trimpath -buildvcs=false -tags netgo,osusergo \
         -ldflags "-s -w -X github.com/Chistovik92/hydravpn-router/pkg/version.Version=${V#v}" \
         -o /hydravpn-router ./cmd/hydravpn-router
 

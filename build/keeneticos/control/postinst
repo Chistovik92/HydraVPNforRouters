@@ -1,0 +1,5 @@
+#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+chmod 0600 /opt/etc/hydravpn-router/config.yaml 2>/dev/null
+[ -x /opt/etc/init.d/S99hydravpn-router ] && /opt/etc/init.d/S99hydravpn-router restart
+exit 0

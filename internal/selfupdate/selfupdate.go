@@ -94,8 +94,11 @@ type Options struct {
 	DownloadBase string // default https://github.com
 	Client       *http.Client
 	GOOS, GOARCH string
-	Container    *bool
-	Verify       func(ctx context.Context, bin, ver string) error
+	// Flavor is the OS family the release file is named after (openwrt,
+	// keeneticos, linux). Empty detects it from the running system.
+	Flavor    string
+	Container *bool
+	Verify    func(ctx context.Context, bin, ver string) error
 }
 
 // Updater checks for and applies updates. It is safe for concurrent use.
@@ -145,6 +148,9 @@ func New(o Options) *Updater {
 			o.Binary = exe
 		}
 	}
+	if o.Flavor == "" {
+		o.Flavor = DetectFlavor(o.Binary)
+	}
 
 	u := &Updater{o: o, status: Status{Current: o.Current, State: StateIdle}}
 	if reason := u.unsupported(); reason != "" {
@@ -169,7 +175,7 @@ func (u *Updater) unsupported() string {
 	case u.o.Binary == "":
 		return "cannot find the executable"
 	}
-	name, err := AssetName("0.0.0", u.o.GOOS, u.o.GOARCH, goarm())
+	name, err := AssetNameFor(u.o.Flavor, "0.0.0", u.o.GOOS, u.o.GOARCH, goarm())
 	if err != nil {
 		return err.Error()
 	}
@@ -198,16 +204,49 @@ func goarm() string {
 	return "7"
 }
 
-// AssetName returns the release file for a version and platform, matching
-// scripts/build.sh.
+// Release files are named after the OS they are installed on:
+// hydravpn-router-<version>-<flavor>-<arch>.
+const (
+	FlavorLinux    = "linux" // other Linux hosts: only releases before 1.2.5 have such files
+	FlavorOpenWrt  = "openwrt"
+	FlavorKeenetic = "keeneticos"
+	FlavorRouterOS = "routeros"
+)
+
+// DetectFlavor tells which OS family the binary runs on.
+func DetectFlavor(binary string) string {
+	if runtime.GOOS != "linux" {
+		return FlavorLinux
+	}
+	if _, err := os.Stat("/etc/openwrt_release"); err == nil {
+		return FlavorOpenWrt
+	}
+	if strings.HasPrefix(binary, "/opt/") {
+		if _, err := os.Stat("/opt/bin/opkg"); err == nil {
+			return FlavorKeenetic
+		}
+	}
+	return FlavorLinux
+}
+
+// AssetName returns the generic Linux release file for a version and platform.
 func AssetName(ver, goos, goarch, arm string) (string, error) {
+	return AssetNameFor(FlavorLinux, ver, goos, goarch, arm)
+}
+
+// AssetNameFor returns the release file for an OS family, matching
+// scripts/build.sh.
+func AssetNameFor(flavor, ver, goos, goarch, arm string) (string, error) {
 	suffix := goarch
 	switch goos + "/" + goarch {
 	case "linux/amd64", "linux/arm64", "linux/386", "linux/mips", "linux/mipsle", "linux/mips64", "linux/mips64le":
 	case "linux/arm":
-		if arm == "7" {
+		switch arm {
+		case "7":
 			suffix = "armv7"
-		} else {
+		case "5":
+			suffix = "armv5"
+		default:
 			suffix = "armv6"
 		}
 	case "windows/amd64":
@@ -215,7 +254,10 @@ func AssetName(ver, goos, goarch, arm string) (string, error) {
 	default:
 		return "", fmt.Errorf("no release builds for %s/%s", goos, goarch)
 	}
-	return "hydravpn-router-" + ver + "-linux-" + suffix, nil
+	if flavor == "" {
+		flavor = FlavorLinux
+	}
+	return "hydravpn-router-" + ver + "-" + flavor + "-" + suffix, nil
 }
 
 // Binary is the executable that an update replaces.
@@ -361,18 +403,25 @@ func (u *Updater) apply(ctx context.Context, ver string) error {
 		}
 		ver = st.Latest
 	}
-	asset, err := AssetName(ver, u.o.GOOS, u.o.GOARCH, goarm())
+	asset, err := AssetNameFor(u.o.Flavor, ver, u.o.GOOS, u.o.GOARCH, goarm())
+	if err != nil {
+		return err
+	}
+	base := u.o.DownloadBase + "/" + u.o.Repo + "/releases/download/v" + ver + "/"
+	want, err := u.checksum(ctx, base+"checksums.txt", asset)
+	if err != nil && u.o.Flavor != FlavorLinux {
+		// Releases before 1.2.5 only have the generic Linux file.
+		if generic, gerr := AssetName(ver, u.o.GOOS, u.o.GOARCH, goarm()); gerr == nil {
+			if w, werr := u.checksum(ctx, base+"checksums.txt", generic); werr == nil {
+				asset, want, err = generic, w, nil
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
 	u.set(func(s *Status) { s.Target = ver; s.Asset = asset; s.State = StateDownloading })
 	u.log("info", "updating %s -> %s (%s)", u.o.Current, ver, asset)
-
-	base := u.o.DownloadBase + "/" + u.o.Repo + "/releases/download/v" + ver + "/"
-	want, err := u.checksum(ctx, base+"checksums.txt", asset)
-	if err != nil {
-		return err
-	}
 
 	tmp := u.o.Binary + ".new"
 	defer os.Remove(tmp) // no-op once it has been renamed into place

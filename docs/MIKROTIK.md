@@ -2,6 +2,15 @@
 
 > **Статус: не проверено на реальном роутере.** Ниже — схема и команды, которые следуют из устройства RouterOS 7 и из того, как сервис перехватывает трафик. Перед использованием выполните проверку из раздела «Проверка».
 
+## Установка одной командой
+
+```
+/tool fetch url="https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.rsc" dst-path=hydravpn-install.rsc
+/import hydravpn-install.rsc
+```
+
+Скрипт `scripts/install.rsc` определяет архитектуру, скачивает `hydravpn-router-routeros-<ver>-<arm64|armv7|amd64>.tar`, создаёт `veth`, bridge, NAT, mount и контейнер и запускает его. Перед `/import` можно задать `:global hydraRouteLan "192.168.88.0/24"` — тогда будут добавлены таблица маршрутизации и правило mangle из раздела ниже. Команды ниже — то, что скрипт делает; их можно выполнить вручную.
+
 ## Требования
 
 - RouterOS **7.6+** с пакетом `container`, режим устройства с включёнными контейнерами (`/system/device-mode/update container=yes` + подтверждение кнопкой/перезагрузкой).

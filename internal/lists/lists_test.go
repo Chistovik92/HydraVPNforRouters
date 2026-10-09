@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -67,5 +68,42 @@ func TestFetchServesEntriesAndNotifies(t *testing.T) {
 	m2.mu.Unlock()
 	if _, _, ok := m2.ListEntries(u); !ok {
 		t.Error("cache not loaded")
+	}
+}
+
+func TestParseEntriesKinds(t *testing.T) {
+	e := ParseEntries(`# header
+namespace:Example.com
+full:exact.example   # only this one
+keyword:tracker
+wildcard:cdn*.video.?om
+cdn?.static.net
+*.sub.example.org
+regexp:^ads?\d+\.example\.com$
+regexp:([unclosed
+2001:db8::/32
+`)
+	check := func(name string, got []string, want ...string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %v want %v", name, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("%s[%d]: got %q want %q", name, i, got[i], want[i])
+			}
+		}
+	}
+	check("suffix", e.Suffix, "example.com", "sub.example.org")
+	check("exact", e.Exact, "exact.example")
+	check("keyword", e.Keyword, "tracker")
+	check("regex", e.Regex, `^cdn.*\.video\..om$`, `^cdn.\.static\.net$`, `^ads?\d+\.example\.com$`)
+	check("cidr", e.CIDR, "2001:db8::/32")
+}
+
+func TestWildcardToRegexp(t *testing.T) {
+	re := regexp.MustCompile(WildcardToRegexp("a*.b?.com"))
+	if !re.MatchString("abc.bx.com") || re.MatchString("abc.bxx.com") || re.MatchString("a.bx.com.evil") {
+		t.Error("wildcard regexp")
 	}
 }

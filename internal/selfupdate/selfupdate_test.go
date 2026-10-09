@@ -244,3 +244,33 @@ func TestInvalidVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestAssetNameForFlavors(t *testing.T) {
+	for _, tt := range []struct{ flavor, goarch, arm, want string }{
+		{"openwrt", "mipsle", "", "hydravpn-router-1.2.5-openwrt-mipsle"},
+		{"keeneticos", "arm64", "", "hydravpn-router-1.2.5-keeneticos-arm64"},
+		{"keeneticos", "arm", "5", "hydravpn-router-1.2.5-keeneticos-armv5"},
+		{"", "amd64", "", "hydravpn-router-1.2.5-linux-amd64"},
+	} {
+		got, err := AssetNameFor(tt.flavor, "1.2.5", "linux", tt.goarch, tt.arm)
+		if err != nil || got != tt.want {
+			t.Errorf("%s/%s: %q %v want %q", tt.flavor, tt.goarch, got, err, tt.want)
+		}
+	}
+}
+
+func TestFlavorFallsBackToGenericAsset(t *testing.T) {
+	// The release only has the generic Linux file (version before 1.2.5).
+	f := &fakeGitHub{latest: "1.2.4", content: []byte("new binary")}
+	srv := f.server(t)
+	defer srv.Close()
+	u, bin, restarted := newTestUpdater(t, srv, "1.2.3")
+	u.o.Flavor = FlavorOpenWrt
+	if err := u.apply(context.Background(), "1.2.4"); err != nil {
+		t.Fatal(err)
+	}
+	<-restarted
+	if got, _ := os.ReadFile(bin); string(got) != "new binary" {
+		t.Errorf("binary not replaced: %q", got)
+	}
+}

@@ -14,16 +14,6 @@ LDFLAGS := -s -w \
 
 BUILD_TAGS := netgo,osusergo
 
-# OpenWrt package architecture | GOARCH | GOARM
-OPENWRT_TARGETS := \
-    x86_64|amd64| \
-    aarch64_generic|arm64| \
-    aarch64_cortex-a53|arm64| \
-    arm_cortex-a7_neon-vfpv4|arm|7 \
-    arm_cortex-a9|arm|7 \
-    mipsel_24kc|mipsle| \
-    mips_24kc|mips|
-
 # Default target
 all: build
 
@@ -35,16 +25,13 @@ build:
 build-all:
 	./scripts/build.sh $(VERSION) ./dist
 
-# Build OpenWrt .ipk packages (needs Docker with BuildKit)
-build-openwrt:
-	@for t in $(OPENWRT_TARGETS); do \
-		pkg=$${t%%|*}; rest=$${t#*|}; goarch=$${rest%%|*}; goarm=$${rest#*|}; \
-		echo "==> $$pkg ($$goarch$$goarm)"; \
-		docker build -f build/openwrt/Dockerfile \
-			--build-arg VERSION=$(VERSION) \
-			--build-arg PKG_ARCH=$$pkg --build-arg GOARCH=$$goarch --build-arg GOARM=$$goarm \
-			--output type=local,dest=dist/openwrt . || exit 1; \
-	done
+# Build the .ipk packages (OpenWrt, KeeneticOS) from the binaries in dist/
+packages: build-all
+	@echo "packages: dist/hydravpn-router-<openwrt|keeneticos>_$(VERSION)_<arch>.ipk, sizes: dist/sizes.md"
+
+# Build the RouterOS container image (needs Docker with BuildKit)
+build-routeros:
+	docker buildx build --platform linux/arm64 --build-arg VERSION=$(VERSION) 		--output type=docker,dest=dist/hydravpn-router-routeros-$(VERSION)-arm64.tar .
 
 # Run tests
 test:
@@ -104,8 +91,9 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  build         - Build for current platform"
-	@echo "  build-all     - Build release binaries for all platforms"
-	@echo "  build-openwrt - Build OpenWrt .ipk packages (Docker)"
+	@echo "  build-all     - Build release binaries and packages (openwrt, keeneticos, routeros)"
+	@echo "  build-routeros - Build the RouterOS container image (Docker)"
+	@echo "  packages      - Build .ipk packages for OpenWrt and KeeneticOS"
 	@echo "  test          - Run tests"
 	@echo "  test-cover    - Run tests with coverage"
 	@echo "  lint          - Run linter"
@@ -119,4 +107,4 @@ help:
 	@echo "  release       - Build release artifacts"
 	@echo "  help          - Show this help"
 
-.PHONY: all build build-all build-openwrt test test-cover lint fmt vet clean install dev docker-build docker-run release help
+.PHONY: all build build-all packages build-routeros test test-cover lint fmt vet clean install dev docker-build docker-run release help

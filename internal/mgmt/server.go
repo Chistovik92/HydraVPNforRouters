@@ -380,6 +380,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/radar", s.handleRadarUnlink)
 
 	s.updateRoutes(mux)
+	s.toolRoutes(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
