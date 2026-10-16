@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Checks of the component (core) versions.
+
+- **sing-box version check on Keenetic.** The check of the latest sing-box release used Go's default CA store, which KeeneticOS does not have, so it always failed with a certificate error; it now uses Entware's CA bundle, like the self-updater.
+- **Pre-release versions.** `sing-box version 1.13.0-beta.5` is read with its suffix and compared as older than `1.13.0` (it used to count as equal, so the release was never offered). The status of a component (`GET /api/v1/status` → `components`) has a new `latest_untested`: the latest release is a major.minor newer than the tested one, and the log line about the update says so.
+- **`download_components_via_proxy_section` works.** It was read from the config but never used: with `download_components_via_proxy` the version check and the self-update went to the local mixed proxy and then followed the routing rules (usually direct). The mixed inbound is now routed to the outbound of that section, before the domain rules; a section without an outbound is reported as a warning.
+- **`scripts/check-upstream.sh`** stopped at the first newer component and never checked the others; it now checks every one, compares versions with `sort -V` (an older "latest" is not reported as newer) and takes the newest release of Xray-core, which labels every release "pre-release" (its `releases/latest` is months old).
+- **Workflow `Upstream`** updates the open "Component updates available" issue (a comment when the report changed) instead of opening a new one every week.
+
 ## 1.2.5
 
 Ideas of four projects added (details and limits: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)) and release files named after the OS.
