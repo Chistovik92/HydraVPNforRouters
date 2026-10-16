@@ -90,20 +90,20 @@ func (s *Server) handleCores(w http.ResponseWriter, r *http.Request) {
 			info.Binary = cores.FindBinary(k, configured[k], filepath.Dir(link))
 		}
 		info.Managed = link != "" && info.Binary != "" && cores.Resolve(info.Binary) == cores.Resolve(link)
-		info.Installed = binaryVersion(r.Context(), info.Binary)
+		info.Installed = binaryVersion(r.Context(), info.Binary, cores.VersionArgs(k))
 		out = append(out, info)
 	}
 	writeJSON(w, 200, out)
 }
 
 // binaryVersion asks a core for its version ("" if it does not run).
-func binaryVersion(ctx context.Context, bin string) string {
-	if bin == "" {
-		return ""
+func binaryVersion(ctx context.Context, bin string, args []string) string {
+	if bin == "" || args == nil {
+		return "" // no side-effect-free way to ask (OpenFlux, olcRTC)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "version").CombinedOutput()
+	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
 	if err != nil {
 		return ""
 	}

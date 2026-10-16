@@ -93,7 +93,15 @@ func NewInProcess(o Options) *Server {
 
 // Call runs one API request in process, with the same handlers, checks and
 // config writes as over HTTP; who is the audit label for the journal.
-func (s *Server) Call(ctx context.Context, who, method, path string, body interface{}) (int, []byte) {
+func (s *Server) Call(ctx context.Context, who, method, path string, body interface{}) (code int, out []byte) {
+	// Over HTTP net/http recovers a handler panic; here nothing would, and
+	// the caller (the bot) runs inside the service process.
+	defer func() {
+		if r := recover(); r != nil {
+			s.log("error", "%s %s %s: panic: %v", who, method, path, r)
+			code, out = http.StatusInternalServerError, []byte(`{"error":"internal error"}`)
+		}
+	}()
 	var rd io.Reader = http.NoBody
 	if body != nil {
 		data, _ := json.Marshal(body)
@@ -557,7 +565,11 @@ func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
 		if i < 0 {
 			return errors.New("no such section")
 		}
-		c.Sections[i] = config.UnmaskSection(sec, c.Sections[i])
+		unmasked, err := config.UnmaskSection(sec, c.Sections[i])
+		if err != nil {
+			return err
+		}
+		c.Sections[i] = unmasked
 		return nil
 	})
 	s.done(w, err, 200, "updated")

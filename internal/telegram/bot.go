@@ -61,8 +61,11 @@ type Options struct {
 type Bot struct {
 	o Options
 
-	mu     sync.Mutex
-	recent []sms.Message
+	mu        sync.Mutex
+	recent    []sms.Message
+	httpc     *http.Client
+	httpProxy string
+	answered  map[int64]time.Time // strangers already told their id
 }
 
 // New creates a Bot; Run starts it.
@@ -75,11 +78,18 @@ func New(o Options) *Bot {
 
 func (b *Bot) settings() Settings { return b.o.Settings() }
 
+// client is kept while the proxy setting stays the same, so long polling
+// reuses one connection instead of opening a new one per call.
 func (b *Bot) client(proxy string) *http.Client {
 	if b.o.Client != nil {
 		return b.o.Client
 	}
-	return selfupdate.NewHTTPClient(proxy, (pollTimeout+15)*time.Second)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.httpc == nil || b.httpProxy != proxy {
+		b.httpc, b.httpProxy = selfupdate.NewHTTPClient(proxy, (pollTimeout+15)*time.Second), proxy
+	}
+	return b.httpc
 }
 
 // call invokes a Bot API method.
@@ -154,6 +164,9 @@ type update struct {
 		Chat struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
+		From *struct {
+			ID int64 `json:"id"`
+		} `json:"from"`
 		Text string `json:"text"`
 	} `json:"message"`
 }
@@ -181,8 +194,8 @@ func (b *Bot) Run(ctx context.Context) {
 		}
 		for _, u := range ups {
 			offset = u.ID + 1
-			if u.Message != nil && u.Message.Text != "" {
-				b.handle(ctx, u.Message.Chat.ID, u.Message.Text)
+			if u.Message != nil && u.Message.Text != "" && u.Message.From != nil {
+				b.handle(ctx, u.Message.Chat.ID, u.Message.From.ID, u.Message.Text)
 			}
 		}
 	}
@@ -195,14 +208,29 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (b *Bot) handle(ctx context.Context, chat int64, text string) {
+// handle runs a command. The sender is checked, not the chat: in a group
+// every member could otherwise manage the router.
+func (b *Bot) handle(ctx context.Context, chat, from int64, text string) {
 	allowed := false
 	for _, id := range b.settings().Chats {
-		allowed = allowed || id == chat
+		allowed = allowed || id == from
 	}
 	if !allowed {
-		b.log("warn", "message from chat %d, which is not in telegram_chat_ids", chat)
-		b.Send(ctx, chat, fmt.Sprintf("Этот чат не может управлять роутером. Его ID: %d — добавьте его в telegram_chat_ids (веб-интерфейс, приложение Hydra или config.yaml).", chat))
+		// Answer a stranger once an hour: spam must not flood the journal
+		// or make the bot hit Telegram limits.
+		b.mu.Lock()
+		if b.answered == nil {
+			b.answered = map[int64]time.Time{}
+		}
+		recent := time.Since(b.answered[from]) < time.Hour
+		if !recent {
+			b.answered[from] = time.Now()
+		}
+		b.mu.Unlock()
+		if !recent {
+			b.log("warn", "message from user %d, who is not in telegram_chat_ids", from)
+			b.Send(ctx, chat, fmt.Sprintf("Вы не можете управлять этим роутером. Ваш ID: %d — добавьте его в telegram_chat_ids (веб-интерфейс, приложение Hydra или config.yaml).", from))
+		}
 		return
 	}
 	cmd, args := parseCommand(text)
@@ -244,11 +272,19 @@ func (b *Bot) smsLoop(ctx context.Context) {
 				b.log("warn", "sms %s: %v", src.Name(), err)
 			}
 			for _, m := range msgs {
-				b.remember(m)
+				if m.From == "" && m.Text == "" {
+					// Unexpected modem output: never delete what could not be read.
+					b.log("warn", "sms %s from %s could not be read; it stays on the modem", m.ID, src.Name())
+					src.Done(m)
+					continue
+				}
 				if !b.Notify(ctx, formatSMS(m)) {
+					// Not Done: the next poll tries again.
 					b.log("warn", "sms from %s was not delivered to Telegram; it stays on the modem", m.From)
 					continue
 				}
+				b.remember(m)
+				src.Done(m)
 				if st.SMSDelete {
 					if err := src.Delete(ctx, m); err != nil {
 						b.log("warn", "sms %s: delete %s: %v", src.Name(), m.ID, err)

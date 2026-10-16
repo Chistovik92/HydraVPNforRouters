@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -78,7 +79,26 @@ done:
 	if c.Peer["publickey"] == "" || c.Interface["privatekey"] == "" || c.Peer["endpoint"] == "" {
 		return c, errors.New("wireguard: private key, peer public key and endpoint are required")
 	}
-	return c, nil
+	return c, c.validate()
+}
+
+// validate checks what goes to ip(8): the config comes from a subscription,
+// that is from a third party.
+func (c WireGuardConf) validate() error {
+	for _, a := range c.Addresses() {
+		if _, _, err := net.ParseCIDR(a); err != nil {
+			if net.ParseIP(a) == nil {
+				return fmt.Errorf("wireguard: bad address %q", a)
+			}
+		}
+	}
+	if m := c.MTU(); m != "" {
+		n, err := strconv.Atoi(m)
+		if err != nil || n < 576 || n > 9000 {
+			return fmt.Errorf("wireguard: bad MTU %q", m)
+		}
+	}
+	return nil
 }
 
 func unwrapWireGuard(t string) (string, error) {
@@ -118,10 +138,15 @@ func wireGuardURI(body string) (string, bool) {
 		return "", false
 	}
 	// "+" in base64 keys is not a space.
+	// A decoded line break would inject keys into the synthesized .conf.
+	bad := false
 	dec := func(v string) string {
 		out, err := url.QueryUnescape(strings.ReplaceAll(v, "+", "%2B"))
 		if err != nil {
-			return v
+			out = v
+		}
+		if strings.ContainsAny(out, "\r\n") {
+			bad = true
 		}
 		return out
 	}
@@ -147,6 +172,9 @@ func wireGuardURI(body string) (string, bool) {
 	b.WriteString("Endpoint = " + strings.TrimSuffix(hostPort, "/") + "\n")
 	if q["keepalive"] != "" {
 		b.WriteString("PersistentKeepalive = " + q["keepalive"] + "\n")
+	}
+	if bad || strings.ContainsAny(hostPort, "\r\n") {
+		return "", false // treated as a broken link, not as a .conf
 	}
 	return b.String(), true
 }

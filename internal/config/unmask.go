@@ -1,5 +1,10 @@
 package config
 
+import (
+	"errors"
+	"fmt"
+)
+
 // A client edits what the API returned, and that copy carries "********"
 // instead of secrets. The helpers below put the stored values back so that
 // writing an edited item does not overwrite keys with the mask.
@@ -14,30 +19,40 @@ func keep(incoming, stored string) string {
 	return incoming
 }
 
-// keepAll restores masked list items by position when the list kept its
-// length; otherwise masked items are dropped (they cannot be matched to a
-// stored value).
-func keepAll(incoming, stored []string) []string {
+// ErrMaskedListChanged: a list sent back with masked items no longer has
+// the stored length, so the items cannot be matched to the stored secrets.
+var ErrMaskedListChanged = errors.New("a list with hidden items (********) changed its length: send the whole list again or keep it as it was")
+
+// keepAll restores masked list items by position. Masked items can only be
+// matched when the list kept its length (items may be edited in place).
+func keepAll(incoming, stored []string) ([]string, error) {
 	if incoming == nil {
-		return nil
+		return nil, nil
 	}
-	out := make([]string, 0, len(incoming))
+	out := make([]string, len(incoming))
 	for i, v := range incoming {
-		switch {
-		case v != masked:
-			out = append(out, v)
-		case len(incoming) == len(stored):
-			out = append(out, stored[i])
+		if v != masked {
+			out[i] = v
+			continue
 		}
+		if len(incoming) != len(stored) {
+			return nil, ErrMaskedListChanged
+		}
+		out[i] = stored[i]
 	}
-	return out
+	return out, nil
 }
 
 // UnmaskSection restores the masked secrets of s from stored.
-func UnmaskSection(s, stored Section) Section {
-	s.SelectorProxyLinks = keepAll(s.SelectorProxyLinks, stored.SelectorProxyLinks)
-	s.OutboundJsons = keepAll(s.OutboundJsons, stored.OutboundJsons)
-	return s
+func UnmaskSection(s, stored Section) (Section, error) {
+	var err error
+	if s.SelectorProxyLinks, err = keepAll(s.SelectorProxyLinks, stored.SelectorProxyLinks); err != nil {
+		return s, fmt.Errorf("selector_proxy_links: %w", err)
+	}
+	if s.OutboundJsons, err = keepAll(s.OutboundJsons, stored.OutboundJsons); err != nil {
+		return s, fmt.Errorf("outbound_jsons: %w", err)
+	}
+	return s, nil
 }
 
 // UnmaskServer restores the masked secrets of s from stored.

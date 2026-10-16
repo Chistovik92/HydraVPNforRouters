@@ -162,6 +162,9 @@ func (s *Server) handleRulesAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mutate(func(c *config.Config) error {
+		if err := ruleSectionExists(c, rule); err != nil {
+			return err
+		}
 		c.Rules = append(c.Rules, rule)
 		return nil
 	})
@@ -183,6 +186,9 @@ func (s *Server) handleRulesReplace(w http.ResponseWriter, r *http.Request) {
 		if idx >= len(c.Rules) {
 			return errors.New("no such rule")
 		}
+		if err := ruleSectionExists(c, rule); err != nil {
+			return err
+		}
 		c.Rules[idx] = rule
 		return nil
 	})
@@ -203,6 +209,16 @@ func (s *Server) handleRulesDelete(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	s.done(w, err, 200, "deleted")
+}
+
+// ruleSectionExists: a rule added through the API must point at a section.
+// (Loading the config does not insist: an old file may keep a rule of a
+// removed section, which is then just ignored.)
+func ruleSectionExists(c *config.Config, r config.Rule) error {
+	if r.Section != "" && indexOf(c.Sections, r.Section, sectionName) < 0 {
+		return fmt.Errorf("unknown section %q", r.Section)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- community lists
@@ -333,10 +349,15 @@ func patchSettings(st *config.Settings, patch map[string]json.RawMessage) error 
 		}
 		f := v.Field(i)
 		var text string
-		if json.Unmarshal(raw, &text) == nil && config.IsMasked(text) {
+		isText := json.Unmarshal(raw, &text) == nil
+		if isText && config.IsMasked(text) {
 			continue // the masked secret the client got: keep the stored one
 		}
-		if f.Type() == durationType && json.Unmarshal(raw, &text) == nil {
+		if f.Type() == durationType {
+			// Only "30s" / "6h": a bare number would be nanoseconds.
+			if !isText {
+				return fmt.Errorf("%s: give a duration such as \"30s\" or \"6h\"", key)
+			}
 			d, err := time.ParseDuration(text)
 			if err != nil {
 				return fmt.Errorf("%s: %w", key, err)

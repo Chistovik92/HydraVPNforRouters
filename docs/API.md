@@ -48,7 +48,7 @@ Changes that need the service to restart parts of itself (reload, subscription o
 | GET | `/api/v1/sms` | `{"modems":["keenetic"],"messages":[…]}`: SMS sources found and the last 20 SMS (see [TELEGRAM.md](TELEGRAM.md)) |
 | POST | `/api/v1/sms` | `{"to":"+79001234567","text":"…"}`: send an SMS through the router's modem |
 | GET | `/api/v1/settings` | settings by key; durations as `"24h0m0s"`, the token masked |
-| PATCH (or POST) | `/api/v1/settings` | change some settings (POST is the same, for clients without PATCH): `{"disable_quic":true,"update_interval":"6h"}`. Durations take `"6h"` or nanoseconds. `api_*`, file paths (`singbox_binary`, `config_path`, `cache_path`, `log_file`) and bookkeeping keys are read-only here (`400`): a mistake there would lock the app out. Only the changed keys are written |
+| PATCH (or POST) | `/api/v1/settings` | change some settings (POST is the same, for clients without PATCH): `{"disable_quic":true,"update_interval":"6h"}`. Durations only as text (`"30s"`, `"6h"`; a bare number is refused); DNS check intervals are at least 1s, update intervals at least 1m. `api_*`, file paths (`singbox_binary`, `config_path`, `cache_path`, `log_file`) and bookkeeping keys are read-only here (`400`): a mistake there would lock the app out. Only the changed keys are written |
 | GET | `/api/v1/nodes` | selector / url-test groups and proxies with the last latency and country |
 | POST | `/api/v1/nodes/select` | `{"group":"main","node":"Node 1"}` |
 | POST | `/api/v1/nodes/test` | `{"node":"Node 1"}` → `{"delay_ms":123}` |

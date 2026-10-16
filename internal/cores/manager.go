@@ -51,6 +51,9 @@ type spec struct {
 type running struct {
 	spec spec
 	sup  *process.Supervisor
+	// stopped is closed when the process is stopped: an interface setup
+	// still running for it must not touch the next instance.
+	stopped chan struct{}
 }
 
 // Manager starts, restarts and stops the core processes of a Plan.
@@ -134,18 +137,20 @@ func (m *Manager) startLocked(s spec) error {
 	}
 	sup := &process.Supervisor{Name: s.key, RespawnDelay: respawnDelay, OnLog: m.opts.OnLog,
 		PidFile: filepath.Join(m.opts.Dir, s.key+".pid")}
+	stopped := make(chan struct{})
 	if s.inst != nil {
 		inst, conf := *s.inst, *s.wg
-		sup.OnStart = func(int) { m.setupInterface(inst, conf) }
+		sup.OnStart = func(int) { m.setupInterface(inst, conf, stopped) }
 	}
 	if err := sup.Start(s.bin, s.args); err != nil {
 		return err
 	}
-	m.procs[s.key] = &running{spec: s, sup: sup}
+	m.procs[s.key] = &running{spec: s, sup: sup, stopped: stopped}
 	return nil
 }
 
 func (m *Manager) stopLocked(key string, r *running) {
+	close(r.stopped) // first: a pending interface setup gives up
 	r.sup.Stop(stopTimeout)
 	if r.spec.inst != nil {
 		m.teardownInterface(*r.spec.inst)
@@ -183,7 +188,7 @@ func (m *Manager) specs(p *Plan) ([]spec, error) {
 			keyFile = m.path(key + ".key")
 			files[keyFile] = c.Secret
 		}
-		out = append(out, spec{key: key, kind: OpenFlux, names: []string{in.Name}, bin: p.Bins[OpenFlux],
+		out = append(out, spec{key: key, kind: OpenFlux, names: []string{in.Name}, bin: Resolve(p.Bins[OpenFlux]),
 			args: OpenFluxArgs(c, in.Port, keyFile), files: files})
 	}
 	for _, in := range p.Of(OlcRTC) {
@@ -194,7 +199,7 @@ func (m *Manager) specs(p *Plan) ([]spec, error) {
 		}
 		key := fmt.Sprintf("olcrtc-%d", in.Port)
 		cfg := m.path(key + ".yaml")
-		out = append(out, spec{key: key, kind: OlcRTC, names: []string{in.Name}, bin: p.Bins[OlcRTC],
+		out = append(out, spec{key: key, kind: OlcRTC, names: []string{in.Name}, bin: Resolve(p.Bins[OlcRTC]),
 			args: []string{cfg}, files: map[string]string{cfg: OlcRTCConfig(n, in.Port, m.opts.DNS)}})
 	}
 	for _, in := range p.Of(AmneziaWG) {
@@ -240,14 +245,34 @@ func signature(s spec) string {
 // setupInterface configures awgN after amneziawg-go created it: keys, peer
 // and obfuscation over the UAPI socket, then addresses, MTU and a routing
 // table used only by sockets bound to the interface.
-func (m *Manager) setupInterface(in Instance, conf WireGuardConf) {
+func (m *Manager) setupInterface(in Instance, conf WireGuardConf, stopped <-chan struct{}) {
+	isStopped := func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+			return false
+		}
+	}
 	deadline := time.Now().Add(ifaceWait)
 	for !ifaceExists(in.Iface) || !fileExists(uapiSocket(in.Iface)) {
+		if isStopped() {
+			return
+		}
 		if time.Now().After(deadline) {
 			m.log("error", "%s: interface did not appear", in.Iface)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	// The config comes from a subscription: an address inside a network of
+	// the router (its LAN) would pull that traffic into the tunnel.
+	if a, n := overlapsLocal(conf.Addresses()); a != "" {
+		m.log("error", "%s (%s): address %s overlaps the router network %s; node not started", in.Iface, in.Name, a, n)
+		return
+	}
+	if isStopped() {
+		return
 	}
 	req, err := conf.UAPI(resolveHost)
 	if err == nil {
@@ -288,12 +313,54 @@ func (m *Manager) setupInterface(in Instance, conf WireGuardConf) {
 		steps = append(steps, []string{ip, "-6", "rule", "add", "oif", in.Iface, "lookup", table})
 	}
 	for _, st := range steps {
+		if isStopped() {
+			return // the next instance configures the interface itself
+		}
 		if err := m.run(st[0], st[1:]...); err != nil {
 			m.log("error", "%s: %v", in.Iface, err)
 			return
 		}
 	}
 	m.log("info", "%s is up (%s)", in.Iface, in.Name)
+}
+
+// localNets lists the networks of the router's interfaces (replaced in tests).
+var localNets = func() []*net.IPNet {
+	var out []*net.IPNet
+	ifaces, _ := net.Interfaces()
+	for _, ifc := range ifaces {
+		if strings.HasPrefix(ifc.Name, "awg") {
+			continue // our own tunnels
+		}
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// overlapsLocal returns the first tunnel address that overlaps a network of
+// the router, and that network.
+func overlapsLocal(addrs []string) (string, string) {
+	nets := localNets()
+	for _, a := range addrs {
+		ip, n, err := net.ParseCIDR(a)
+		if err != nil {
+			if ip = net.ParseIP(a); ip == nil {
+				continue
+			}
+			n = &net.IPNet{IP: ip, Mask: net.CIDRMask(len(ip)*8, len(ip)*8)}
+		}
+		for _, l := range nets {
+			if l.Contains(n.IP) || n.Contains(l.IP) {
+				return a, l.String()
+			}
+		}
+	}
+	return "", ""
 }
 
 // uapiSocket is where amneziawg-go listens (ipc/uapi_unix.go upstream).

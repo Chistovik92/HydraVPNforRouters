@@ -43,8 +43,46 @@ func TestKeeneticSpool(t *testing.T) {
 	if len(nd.cmds) != 1 || nd.cmds[0] != "sms UsbQmi0 list id nv-1" {
 		t.Errorf("ndmc commands: %v (an unsafe entry must not reach ndmc)", nd.cmds)
 	}
+	// Not delivered yet: the entry stays and the SMS comes again.
+	if again, _ := k.Poll(context.Background()); len(again) != 1 {
+		t.Errorf("an SMS not marked Done must be returned again: %+v", again)
+	}
+	k.Done(msgs[0])
 	if left, _ := os.ReadDir(dir); len(left) != 0 {
-		t.Errorf("spool not emptied: %v", left)
+		t.Errorf("spool not emptied after Done: %v", left)
+	}
+}
+
+type failingNdmc struct{ calls int }
+
+func (f *failingNdmc) Run(ctx context.Context, cmd string) (string, error) {
+	f.calls++
+	if strings.Contains(cmd, "gone") {
+		return "", os.ErrNotExist
+	}
+	return "from: 900\ntext: ok\n", nil
+}
+
+func TestKeeneticBadEntryDoesNotBlockTheRest(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "UsbQmi0-gone"), []byte("UsbQmi0 gone\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "UsbQmi0-nv-2"), []byte("UsbQmi0 nv-2\n"), 0644)
+	k := &Keenetic{Spool: dir, Ndmc: &failingNdmc{}}
+	for i := 0; i < maxReadFailures; i++ {
+		msgs, err := k.Poll(context.Background())
+		if err == nil || len(msgs) != 1 || msgs[0].ID != "nv-2" {
+			t.Fatalf("poll %d: %v %+v", i, err, msgs)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "UsbQmi0-gone")); !os.IsNotExist(err) {
+		t.Error("an entry that keeps failing must be dropped")
+	}
+}
+
+func TestNdmcTextCannotReplaceTheSender(t *testing.T) {
+	m := ParseNdmc("      from: +79001234567\n      text: Код 1234\n            from: Bank\n")
+	if m.From != "+79001234567" || !strings.Contains(m.Text, "from: Bank") {
+		t.Errorf("%+v", m)
 	}
 }
 
@@ -57,10 +95,19 @@ func TestModemManagerPollsOnce(t *testing.T) {
 		}
 		return "    /org/freedesktop/ModemManager1/SMS/3 (received)\n    /org/freedesktop/ModemManager1/SMS/4 (sent)\n", nil
 	}}
+	m.seen = newSeen(filepath.Join(t.TempDir(), ".seen"))
 	first, _ := m.Poll(context.Background())
-	second, _ := m.Poll(context.Background())
-	if len(first) != 1 || first[0].ID != "3" || len(second) != 0 {
-		t.Errorf("first %+v second %+v calls %v", first, second, calls)
+	if len(first) != 1 || first[0].ID != "3" {
+		t.Fatalf("first %+v calls %v", first, calls)
+	}
+	m.Done(first[0])
+	if second, _ := m.Poll(context.Background()); len(second) != 0 {
+		t.Errorf("a Done SMS came again: %+v", second)
+	}
+	// After a restart of the service the handled ids are still known.
+	restarted := &ModemManager{run: m.run, seen: newSeen(m.seen.path)}
+	if again, _ := restarted.Poll(context.Background()); len(again) != 0 {
+		t.Errorf("forwarded again after a restart: %+v", again)
 	}
 }
 
@@ -71,8 +118,12 @@ func TestSMSToolsSendAndDelete(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "incoming", "GSM1.abc"), []byte("From: 900\n\nhello\n"), 0644)
 	s := &SMSTools{Dir: dir}
 	msgs, _ := s.Poll(context.Background())
-	if again, _ := s.Poll(context.Background()); len(msgs) != 1 || len(again) != 0 {
-		t.Fatalf("poll: %+v then %+v", msgs, again)
+	if len(msgs) != 1 {
+		t.Fatalf("poll: %+v", msgs)
+	}
+	s.Done(msgs[0])
+	if again, _ := s.Poll(context.Background()); len(again) != 0 {
+		t.Fatalf("a Done SMS came again: %+v", again)
 	}
 	if err := s.Delete(context.Background(), Message{ID: "../x"}); err == nil {
 		t.Error("path traversal accepted")

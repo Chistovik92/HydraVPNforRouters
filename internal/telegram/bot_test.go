@@ -74,15 +74,17 @@ func fakeTelegram(t *testing.T, token string, msgs []map[string]interface{}) (*h
 func TestBotObeysOnlyAllowedChats(t *testing.T) {
 	token := "123:secret"
 	srv, sent := fakeTelegram(t, token, []map[string]interface{}{
-		{"chat": map[string]interface{}{"id": 42}, "text": "/status"},
-		{"chat": map[string]interface{}{"id": 42}, "text": "/select@hydra_bot main Node 1"},
-		{"chat": map[string]interface{}{"id": 7}, "text": "/restart"},
+		{"chat": map[string]interface{}{"id": 42}, "from": map[string]interface{}{"id": 42}, "text": "/status"},
+		{"chat": map[string]interface{}{"id": -100}, "from": map[string]interface{}{"id": 42}, "text": "/select@hydra_bot main Node 1"},
+		// A group listed by mistake does not let its other members in.
+		{"chat": map[string]interface{}{"id": -100}, "from": map[string]interface{}{"id": 7}, "text": "/restart"},
+		{"chat": map[string]interface{}{"id": -100}, "from": map[string]interface{}{"id": 7}, "text": "/restart"},
 	})
 	api := &fakeAPI{}
 	var logMu sync.Mutex
 	var logs []string
 	b := New(Options{
-		Settings: func() Settings { return Settings{Token: token, Chats: []int64{42}} },
+		Settings: func() Settings { return Settings{Token: token, Chats: []int64{42, -100}} },
 		API:      api, BaseURL: srv.URL, Client: srv.Client(),
 		OnLog: func(level, m string) { logMu.Lock(); logs = append(logs, m); logMu.Unlock() },
 	})
@@ -104,7 +106,7 @@ func TestBotObeysOnlyAllowedChats(t *testing.T) {
 	if !strings.Contains(got[1]["text"].(string), "Выбран Node 1 в main") {
 		t.Errorf("select reply: %v", got[1]["text"])
 	}
-	if got[2]["chat_id"].(float64) != 7 || !strings.Contains(got[2]["text"].(string), "ID: 7") {
+	if got[2]["chat_id"].(float64) != -100 || !strings.Contains(got[2]["text"].(string), "ID: 7") {
 		t.Errorf("stranger reply: %v", got[2])
 	}
 	api.mu.Lock()

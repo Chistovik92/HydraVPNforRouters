@@ -11,10 +11,12 @@ Full management from the Hydra app, the cores of the Hydra app on the router, a 
 - **Settings:** `GET /api/v1/settings` (durations as `"24h0m0s"`, secrets masked), `PATCH`/`POST /api/v1/settings` changes only the given keys; `api_*`, file paths and bookkeeping keys are read-only there.
 - **Edits keep secrets:** PUT `sections/{name}`, `servers/{name}` (new) and `subscriptions/{index}` (new) restore the masked values (`********`) from the stored config, so editing what the API returned no longer wipes keys.
 - Subscription URLs no longer appear in validation errors (they reached the API reply and the journal).
+- Durations in the settings API are text only; DNS check intervals are at least 1s and update intervals at least 1m (`10` used to mean ten nanoseconds). A rule must point at an existing section when written through the API; an old config with a rule of a removed section still loads.
+- A list with hidden items (`********`) that changed its length is refused instead of silently dropping the secrets.
 
 ### Cores of the Hydra app
 
-- Nodes that sing-box cannot run now work instead of being dropped: **Xray** (xhttp, post-quantum VLESS; one process, a SOCKS inbound per node), **OpenFlux** (`openflux://`, official v1 and the app's legacy form), **olcRTC** (`olcrtc://`), **AmneziaWG / WireGuard** (`awg://`, `wireguard://`, `vpn://`, `.conf`; `amneziawg-go` configured over its UAPI socket — no awg tool, no key files — with its own routing table and a DNS server queried through the tunnel). Link formats and configs follow the Hydra app. Limits protect router memory; a missing core skips its nodes with a warning; `status.cores` lists them.
+- Nodes that sing-box cannot run now work instead of being dropped: **Xray** (xhttp, post-quantum VLESS; one process, a SOCKS inbound per node), **OpenFlux** (`openflux://`, official v1 and the app's legacy form), **olcRTC** (`olcrtc://`), **AmneziaWG / WireGuard** (`awg://`, `wireguard://`, `vpn://`, `.conf`; `amneziawg-go` configured over its UAPI socket — no awg tool, no key files — with its own routing table and a DNS server queried through the tunnel). Addresses and MTU of AmneziaWG configs are validated, and a tunnel address inside a router network (its LAN) is refused. Link formats and configs follow the Hydra app. Limits protect router memory; a missing core skips its nodes with a warning; `status.cores` lists them.
 - **Choose the version:** `GET /api/v1/cores`, `GET /api/v1/cores/{name}/versions` (betas included), `POST /api/v1/cores/{name}/install` (`x.y.z`, `latest`, `beta`) and `hydravpn-router core list|versions|install`. sing-box and Xray come from their releases (SHA-256 from the release, the binary must run and report the version; Xray on MIPS takes `xray_softfloat`); amneziawg-go, OpenFlux and olcRTC are built for every router CPU by the release workflow (`core-<binary>-linux-<arch>`). The previous version stays for a rollback without network; switching restarts the core.
 - `install.sh` installs the latest sing-box from its release when the package is missing or older than 1.14 (`SINGBOX_VERSION`, `XRAY_VERSION` choose).
 - Tested versions: sing-box 1.14.3, Xray-core 26.10.10, OpenFlux 0.13.0, amneziawg-go 3.1.20260828.
@@ -22,7 +24,8 @@ Full management from the Hydra app, the cores of the Hydra app on the router, a 
 ### Telegram bot and SMS
 
 - A bot (`telegram_bot_token`, `telegram_chat_ids`) that manages the router with the same handlers as the API (status, nodes, subscriptions, update, cores, settings via `/set`, reload/restart, logs, checks) — only for the listed chats; works with the HTTP API off. See [docs/TELEGRAM.md](docs/TELEGRAM.md).
-- SMS from the router's modem (KeeneticOS `ndm/sms.d` hook, ModemManager, smstools3) go to the chats (`sms_forward`, `sms_delete_forwarded`); `GET/POST /api/v1/sms`, `/sms`, `/sendsms`. Not verified on hardware.
+- The bot checks the **sender** (`telegram_chat_ids` holds user ids): in a group only listed members are obeyed; strangers get their id at most once an hour.
+- SMS from the router's modem (KeeneticOS `ndm/sms.d` hook, ModemManager, smstools3) go to the chats; an SMS is marked handled only after it reached Telegram, one that could not be read is never deleted, handled ids survive a service restart (`sms_forward`, `sms_delete_forwarded`); `GET/POST /api/v1/sms`, `/sms`, `/sendsms`. Not verified on hardware.
 
 ### Checks of the component (core) versions
 

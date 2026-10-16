@@ -41,8 +41,11 @@ type Message struct {
 // Source is a place SMS come from.
 type Source interface {
 	Name() string
-	// Poll returns messages not returned before (the source keeps track).
+	// Poll returns the messages not marked Done yet.
 	Poll(ctx context.Context) ([]Message, error)
+	// Done marks a message as handled (delivered, or not worth retrying):
+	// it is not returned again, also after a restart of the service.
+	Done(m Message)
 	// Delete removes a forwarded message from the modem.
 	Delete(ctx context.Context, m Message) error
 	// Send sends an SMS through the modem.
@@ -64,11 +67,11 @@ func Detect(spoolDir string) []Source {
 		out = append(out, &Keenetic{Spool: spoolDir, Ndmc: keenetic.Ndmc{}})
 	}
 	if _, err := exec.LookPath("mmcli"); err == nil {
-		out = append(out, &ModemManager{})
+		out = append(out, &ModemManager{seen: newSeen(filepath.Join(spoolDir, ".seen-modemmanager"))})
 	}
 	for _, dir := range []string{"/opt/var/spool/sms", "/var/spool/sms"} {
 		if st, err := os.Stat(filepath.Join(dir, "incoming")); err == nil && st.IsDir() {
-			out = append(out, &SMSTools{Dir: dir})
+			out = append(out, &SMSTools{Dir: dir, seen: newSeen(filepath.Join(spoolDir, ".seen-smstools3"))})
 			break
 		}
 	}
@@ -85,12 +88,18 @@ type Keenetic struct {
 	RCI string
 
 	mu        sync.Mutex
-	lastModem string // the modem interface that delivered the last SMS
+	lastModem string         // the modem interface that delivered the last SMS
+	failures  map[string]int // spool entry -> failed reads
 }
+
+// maxReadFailures: a spool entry that cannot be read this many times (the
+// SMS is gone from the modem) is dropped instead of being retried forever.
+const maxReadFailures = 3
 
 func (k *Keenetic) Name() string { return "keenetic" }
 
-// Poll reads the spool entries "<iface> <id>" the hook wrote.
+// Poll reads the spool entries "<iface> <id>" the hook wrote; an entry
+// stays until Done, so an SMS that did not reach Telegram is retried.
 func (k *Keenetic) Poll(ctx context.Context) ([]Message, error) {
 	entries, err := os.ReadDir(k.Spool)
 	if err != nil {
@@ -100,7 +109,11 @@ func (k *Keenetic) Poll(ctx context.Context) ([]Message, error) {
 		return nil, err
 	}
 	var out []Message
+	var firstErr error
 	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue // seen files of other sources
+		}
 		path := filepath.Join(k.Spool, e.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -113,17 +126,37 @@ func (k *Keenetic) Poll(ctx context.Context) ([]Message, error) {
 		}
 		raw, err := k.Ndmc.Run(ctx, "sms "+iface+" list id "+id)
 		if err != nil {
-			return out, err // the entry stays: try again later
+			// One bad entry must not hold up the others.
+			k.mu.Lock()
+			if k.failures == nil {
+				k.failures = map[string]int{}
+			}
+			k.failures[path]++
+			if k.failures[path] >= maxReadFailures {
+				os.Remove(path)
+				delete(k.failures, path)
+			}
+			k.mu.Unlock()
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		m := ParseNdmc(raw)
 		m.ID, m.Modem, m.Source = id, iface, k.Name()
 		out = append(out, m)
-		os.Remove(path)
 		k.mu.Lock()
 		k.lastModem = iface
 		k.mu.Unlock()
 	}
-	return out, nil
+	return out, firstErr
+}
+
+// Done drops the spool entry.
+func (k *Keenetic) Done(m Message) {
+	if safeToken(m.Modem) && safeToken(m.ID) {
+		os.Remove(filepath.Join(k.Spool, m.Modem+"-"+m.ID))
+	}
 }
 
 var tokenRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -132,7 +165,9 @@ var tokenRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 func safeToken(s string) bool { return tokenRe.MatchString(s) }
 
 // ParseNdmc reads the "sms <iface> list id <id>" output: from:, timestamp:
-// and text: (continued on indented lines).
+// and text: (continued on indented lines). Once the text has started, a
+// line such as "from: bank" inside it stays text: it cannot replace the
+// sender.
 func ParseNdmc(out string) Message {
 	var m Message
 	inText := false
@@ -140,6 +175,14 @@ func ParseNdmc(out string) Message {
 	for _, line := range strings.Split(out, "\n") {
 		trimmed := strings.TrimSpace(line)
 		key, val, _ := strings.Cut(trimmed, ":")
+		if inText && trimmed != "" && !ndmcKeys[strings.ToLower(key)] {
+			text = append(text, trimmed)
+			continue
+		}
+		if inText && (strings.ToLower(key) == "from" || strings.ToLower(key) == "timestamp") && m.From != "" {
+			text = append(text, trimmed)
+			continue
+		}
 		switch strings.ToLower(key) {
 		case "from":
 			m.From, inText = strings.TrimSpace(val), false
@@ -200,11 +243,60 @@ func (k *Keenetic) Send(ctx context.Context, to, text string) error {
 		"send": map[string]string{"interface": iface, "to": to, "message": text}}}})
 }
 
+// ndmcKeys are the fields of an "sms list" entry.
+var ndmcKeys = map[string]bool{"id": true, "from": true, "timestamp": true, "text": true}
+
+// ---------------------------------------------------------------- seen
+
+// seen remembers the ids of handled messages in a file in the runtime dir
+// (kept across restarts of the service, not across reboots), so a restart
+// does not forward all messages kept on the modem again.
+type seen struct {
+	path string
+	ids  map[string]bool
+}
+
+const maxSeen = 500
+
+func newSeen(path string) *seen {
+	s := &seen{path: path, ids: map[string]bool{}}
+	if path == "" {
+		return s
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		for _, id := range strings.Fields(string(data)) {
+			s.ids[id] = true
+		}
+	}
+	return s
+}
+
+func (s *seen) has(id string) bool { return s != nil && s.ids[id] }
+
+func (s *seen) add(id string) {
+	if s == nil || s.ids[id] {
+		return
+	}
+	if len(s.ids) >= maxSeen {
+		s.ids = map[string]bool{} // ids of messages long gone: start over
+	}
+	s.ids[id] = true
+	if s.path == "" {
+		return
+	}
+	ids := make([]string, 0, len(s.ids))
+	for k := range s.ids {
+		ids = append(ids, k)
+	}
+	os.MkdirAll(filepath.Dir(s.path), 0700)
+	os.WriteFile(s.path, []byte(strings.Join(ids, " ")+" "), 0600)
+}
+
 // ---------------------------------------------------------------- ModemManager
 
 // ModemManager reads SMS with mmcli.
 type ModemManager struct {
-	seen map[string]bool
+	seen *seen
 	// run is replaced in tests.
 	run func(ctx context.Context, args ...string) (string, error)
 }
@@ -226,7 +318,7 @@ var smsPathRe = regexp.MustCompile(`/SMS/(\d+)\s*\((\w+)\)`)
 
 func (m *ModemManager) Poll(ctx context.Context) ([]Message, error) {
 	if m.seen == nil {
-		m.seen = map[string]bool{}
+		m.seen = newSeen("")
 	}
 	list, err := m.mmcli(ctx, "-m", "any", "--messaging-list-sms")
 	if err != nil {
@@ -235,7 +327,7 @@ func (m *ModemManager) Poll(ctx context.Context) ([]Message, error) {
 	var out []Message
 	for _, match := range smsPathRe.FindAllStringSubmatch(list, -1) {
 		id, state := match[1], match[2]
-		if state != "received" || m.seen[id] {
+		if state != "received" || m.seen.has(id) {
 			continue
 		}
 		raw, err := m.mmcli(ctx, "-K", "-s", id)
@@ -244,7 +336,6 @@ func (m *ModemManager) Poll(ctx context.Context) ([]Message, error) {
 		}
 		msg := ParseMmcli(raw)
 		msg.ID, msg.Source = id, m.Name()
-		m.seen[id] = true
 		out = append(out, msg)
 	}
 	return out, nil
@@ -274,6 +365,9 @@ func ParseMmcli(out string) Message {
 	return m
 }
 
+// Done marks the message handled.
+func (m *ModemManager) Done(msg Message) { m.seen.add(msg.ID) }
+
 func (m *ModemManager) Delete(ctx context.Context, msg Message) error {
 	_, err := m.mmcli(ctx, "-m", "any", "--messaging-delete-sms="+msg.ID)
 	return err
@@ -300,7 +394,7 @@ func (m *ModemManager) Send(ctx context.Context, to, text string) error {
 // SMSTools reads the smstools3 spool (incoming/, outgoing/).
 type SMSTools struct {
 	Dir  string
-	seen map[string]bool // files already returned (kept when not deleted)
+	seen *seen // files already handled (kept when not deleted)
 }
 
 func (s *SMSTools) Name() string { return "smstools3" }
@@ -313,14 +407,13 @@ func (s *SMSTools) Poll(ctx context.Context) ([]Message, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	if s.seen == nil {
-		s.seen = map[string]bool{}
+		s.seen = newSeen("")
 	}
 	var out []Message
 	for _, e := range entries {
-		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || s.seen[e.Name()] {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || s.seen.has(e.Name()) {
 			continue
 		}
-		s.seen[e.Name()] = true
 		data, err := os.ReadFile(filepath.Join(in, e.Name()))
 		if err != nil {
 			continue
@@ -348,6 +441,9 @@ func ParseSMSTools(data string) Message {
 	m.Text = strings.TrimSpace(body)
 	return m
 }
+
+// Done marks the file handled.
+func (s *SMSTools) Done(m Message) { s.seen.add(m.ID) }
 
 // Delete removes the file (smstools3 messages are files: forwarded = done).
 func (s *SMSTools) Delete(ctx context.Context, m Message) error {

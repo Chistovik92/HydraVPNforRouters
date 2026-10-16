@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const (
@@ -53,7 +54,10 @@ func NewPlan(nodes []Node, bins Binaries) *Plan {
 	for l := range uniq {
 		links = append(links, l)
 	}
-	sort.Strings(links)
+	// Ordered by the link without its #name: a provider renaming a node
+	// (names often carry the traffic left) must not shift every port.
+	key := func(l string) string { k, frag, _ := strings.Cut(l, "#"); return k + "\x00" + frag }
+	sort.Slice(links, func(i, j int) bool { return key(links[i]) < key(links[j]) })
 
 	port, procs, ifaces := BasePort, 0, 0
 	for _, l := range links {
@@ -61,6 +65,12 @@ func NewPlan(nodes []Node, bins Binaries) *Plan {
 		if bins[n.Kind] == "" {
 			p.Skipped[n.Name] = fmt.Sprintf("%s is not installed", n.Kind)
 			continue
+		}
+		if n.Kind == Xray {
+			if _, err := parseXrayLink(l); err != nil {
+				p.Skipped[n.Name] = err.Error() // nothing would listen on its port
+				continue
+			}
 		}
 		in := Instance{Node: n}
 		switch n.Kind {

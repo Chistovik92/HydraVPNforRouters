@@ -101,7 +101,7 @@ func newTestInstaller(t *testing.T, gh *fakeGitHub, goarch string) (*Installer, 
 	done := make(chan string, 4)
 	inst := NewInstaller(InstallerOptions{
 		Dir: t.TempDir(), APIBase: gh.srv.URL, Client: gh.srv.Client(), GOARCH: goarch, GOARM: "7",
-		Verify: func(ctx context.Context, bin, version string) error {
+		Verify: func(ctx context.Context, k Kind, bin, version string) error {
 			data, err := os.ReadFile(bin)
 			if err != nil || !strings.Contains(string(data), version) {
 				return fmt.Errorf("binary %s does not report %s", bin, version)

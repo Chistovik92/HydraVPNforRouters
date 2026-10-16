@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -203,10 +204,10 @@ func indexArg(cmd string, args []string) (string, string) {
 	if len(args) != 1 {
 		return "", usage(cmd)
 	}
-	if _, err := fmt.Sscanf(args[0], "%d", new(int)); err != nil {
+	if n, err := strconv.Atoi(args[0]); err != nil || n < 0 {
 		return "", usage(cmd)
 	}
-	return url.PathEscape(args[0]), ""
+	return args[0], ""
 }
 
 func cmdRefresh(b *Bot, ctx context.Context, args []string) string {
@@ -339,10 +340,10 @@ func cmdPost(path, ok string) func(b *Bot, ctx context.Context, _ []string) stri
 }
 
 func cmdLogs(b *Bot, ctx context.Context, args []string) string {
-	n := "20"
+	n := 20
 	if len(args) == 1 {
-		if _, err := fmt.Sscanf(args[0], "%d", new(int)); err == nil {
-			n = args[0]
+		if v, err := strconv.Atoi(args[0]); err == nil && v > 0 && v <= 200 {
+			n = v
 		}
 	}
 	var entries []struct {
@@ -350,7 +351,7 @@ func cmdLogs(b *Bot, ctx context.Context, args []string) string {
 		Level   string `json:"level"`
 		Message string `json:"message"`
 	}
-	if e := b.api(ctx, http.MethodGet, "/api/v1/logs?level=warn&n="+n, nil, &entries); e != "" {
+	if e := b.api(ctx, http.MethodGet, "/api/v1/logs?level=warn&n="+strconv.Itoa(n), nil, &entries); e != "" {
 		return e
 	}
 	if len(entries) == 0 {

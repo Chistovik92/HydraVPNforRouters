@@ -459,11 +459,15 @@ func parseConfig(data []byte, name string) (*Config, error) {
 // Validate checks values that would otherwise cause runtime failures.
 func (c *Config) Validate() error {
 	s := c.Settings
-	if s.DNSCheckInterval <= 0 || s.DNSRecoveryCheckInterval <= 0 || s.DNSCheckTimeout <= 0 {
-		return fmt.Errorf("dns check intervals and timeout must be positive")
+	// Lower bounds: a tiny interval (10 = ten nanoseconds) spins a ticker.
+	if s.DNSCheckInterval < time.Second || s.DNSRecoveryCheckInterval < time.Second || s.DNSCheckTimeout < 100*time.Millisecond {
+		return fmt.Errorf("dns check intervals must be at least 1s and the timeout at least 100ms")
 	}
 	if s.UpdateInterval < 0 || s.ComponentUpdateCheckInterval < 0 {
 		return fmt.Errorf("update intervals must not be negative")
+	}
+	if (s.UpdateInterval > 0 && s.UpdateInterval < time.Minute) || (s.ComponentUpdateCheckInterval > 0 && s.ComponentUpdateCheckInterval < time.Minute) {
+		return fmt.Errorf("update intervals must be at least 1m")
 	}
 	names := make(map[string]bool, len(c.Sections))
 	for _, sec := range c.Sections {
@@ -492,11 +496,6 @@ func (c *Config) Validate() error {
 		}
 		if u, err := url.Parse(sub.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("subscription url %q must be a valid http(s) URL", MaskURL(sub.URL))
-		}
-	}
-	for i, r := range c.Rules {
-		if r.Section != "" && !names[r.Section] {
-			return fmt.Errorf("rule %d refers to unknown section %q", i, r.Section)
 		}
 	}
 	return nil

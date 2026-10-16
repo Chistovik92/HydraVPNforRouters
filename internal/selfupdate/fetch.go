@@ -27,6 +27,10 @@ func NewHTTPClient(proxy string, timeout time.Duration) *http.Client {
 		Proxy:               http.ProxyFromEnvironment,
 		TLSHandshakeTimeout: 30 * time.Second,
 		TLSClientConfig:     &tls.Config{RootCAs: RootCAs()},
+		// Clients are short-lived: idle connections must not pile up on a
+		// router (each one also keeps two goroutines).
+		MaxIdleConns:    2,
+		IdleConnTimeout: 60 * time.Second,
 	}
 	if proxy != "" {
 		if pu, err := url.Parse(proxy); err == nil {
