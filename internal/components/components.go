@@ -6,18 +6,19 @@ package components
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/selfupdate"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
 
@@ -41,39 +42,27 @@ type Info struct {
 	Installed string `json:"installed"`
 	Latest    string `json:"latest"`
 	Update    bool   `json:"update_available"`
-	TooOld    bool   `json:"too_old"`
-	Untested  bool   `json:"untested_newer"`
-	Error     string `json:"error,omitempty"`
-	Checked   string `json:"checked,omitempty"`
+	// LatestUntested: the latest release is a major.minor newer than the
+	// tested one, so updating to it may need changes to the generated config.
+	LatestUntested bool   `json:"latest_untested,omitempty"`
+	TooOld         bool   `json:"too_old"`
+	Untested       bool   `json:"untested_newer"`
+	Error          string `json:"error,omitempty"`
+	Checked        string `json:"checked,omitempty"`
 }
 
-var versionRe = regexp.MustCompile(`\d+\.\d+(\.\d+)?`)
+var versionRe = regexp.MustCompile(`\d+\.\d+(\.\d+)?(-[0-9A-Za-z][0-9A-Za-z.]*)?`)
 
-// Parse extracts the first x.y[.z] from text such as "sing-box version 1.12.3".
+// Parse extracts the first x.y[.z][-pre] from text such as
+// "sing-box version 1.12.3" or "v1.13.0-beta.5".
 func Parse(text string) string { return versionRe.FindString(text) }
 
-// Compare returns -1, 0 or 1 comparing dotted numeric versions.
-func Compare(a, b string) int {
-	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(pa) || i < len(pb); i++ {
-		var x, y int
-		if i < len(pa) {
-			x, _ = strconv.Atoi(pa[i])
-		}
-		if i < len(pb) {
-			y, _ = strconv.Atoi(pb[i])
-		}
-		if x != y {
-			if x < y {
-				return -1
-			}
-			return 1
-		}
-	}
-	return 0
-}
+// Compare returns -1, 0 or 1 comparing dotted numeric versions; a
+// pre-release ("1.13.0-beta.5") sorts before its release ("1.13.0").
+func Compare(a, b string) int { return selfupdate.Compare(a, b) }
 
 func majorMinor(v string) string {
+	v, _, _ = strings.Cut(v, "-")
 	p := strings.Split(v, ".")
 	if len(p) > 2 {
 		p = p[:2]
@@ -173,6 +162,7 @@ func (c *Checker) CheckAll(ctx context.Context) {
 		} else {
 			info.Latest = latest
 			info.Update = info.Installed != "" && Compare(latest, info.Installed) > 0
+			info.LatestUntested = comp.Tested != "" && Compare(majorMinor(latest), comp.Tested) > 0
 		}
 		c.mu.Lock()
 		c.results[comp.Name] = info
@@ -183,6 +173,8 @@ func (c *Checker) CheckAll(ctx context.Context) {
 			c.log("error", "%s %s is older than the supported %s: update it", comp.Name, info.Installed, comp.MinVersion)
 		case info.Untested:
 			c.log("warn", "%s %s is newer than the tested %s: report problems if routing breaks", comp.Name, info.Installed, comp.Tested)
+		case info.Update && info.LatestUntested:
+			c.log("info", "%s update available: %s -> %s (not tested yet with the generated config, tested %s)", comp.Name, info.Installed, info.Latest, comp.Tested)
 		case info.Update:
 			c.log("info", "%s update available: %s -> %s", comp.Name, info.Installed, info.Latest)
 		}
@@ -218,12 +210,19 @@ func latestRelease(ctx context.Context, repo, proxy string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", version.UserAgent())
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Same CA pool as the self-updater: KeeneticOS has no system store and
+	// only Entware's bundle makes api.github.com verifiable.
+	tr := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		TLSHandshakeTimeout: 30 * time.Second,
+		TLSClientConfig:     &tls.Config{RootCAs: selfupdate.RootCAs()},
+	}
 	if proxy != "" {
 		if u, err := url.Parse(proxy); err == nil {
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
+			tr.Proxy = http.ProxyURL(u)
 		}
 	}
+	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

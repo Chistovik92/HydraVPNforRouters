@@ -568,7 +568,7 @@ func (u *Updater) client() *http.Client {
 	tr := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		TLSHandshakeTimeout: 30 * time.Second,
-		TLSClientConfig:     &tls.Config{RootCAs: rootCAs()},
+		TLSClientConfig:     &tls.Config{RootCAs: RootCAs()},
 	}
 	if u.o.Proxy != nil {
 		if p := u.o.Proxy(); p != "" {
@@ -586,7 +586,8 @@ func (u *Updater) client() *http.Client {
 // looks in the system locations, which are empty in KeeneticOS.
 const entwareCABundle = "/opt/etc/ssl/certs/ca-certificates.crt"
 
-func rootCAs() *x509.CertPool {
+// RootCAs returns the system CA pool plus the Entware bundle when present.
+func RootCAs() *x509.CertPool {
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
