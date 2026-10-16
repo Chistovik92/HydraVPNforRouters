@@ -781,6 +781,30 @@ func (b *builder) finalize() {
 			}
 		}
 	}
+	b.routeComponentDownloads()
+}
+
+// routeComponentDownloads sends the local mixed inbound (used by the
+// sing-box version check and the self-updater when
+// download_components_via_proxy is set) through the chosen section. The rule
+// goes right after sniffing and DNS hijacking so domain rules don't win.
+func (b *builder) routeComponentDownloads() {
+	s := b.cfg.Settings
+	if !s.DownloadComponentsViaProxy || s.DownloadComponentsViaProxySection == "" {
+		return
+	}
+	g, ok := b.groups[s.DownloadComponentsViaProxySection]
+	if !ok {
+		b.warn("download_components_via_proxy_section %q has no outbound, downloads follow the routing rules", s.DownloadComponentsViaProxySection)
+		return
+	}
+	rules := b.c.Route.Rules
+	at := 0
+	for at < len(rules) && (rules[at]["action"] == "sniff" || rules[at]["action"] == "hijack-dns") {
+		at++
+	}
+	rule := Rule{"inbound": []string{"service-mixed-in"}, "action": "route", "outbound": g}
+	b.c.Route.Rules = append(rules[:at:at], append([]Rule{rule}, rules[at:]...)...)
 }
 
 // ---------------------------------------------------------------- nodes

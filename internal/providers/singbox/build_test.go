@@ -417,3 +417,36 @@ func TestDomainRuleKinds(t *testing.T) {
 		t.Errorf("domain_regex: %v", got["domain_regex"])
 	}
 }
+
+func TestComponentDownloadsGoThroughChosenSection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sections = []config.Section{{Name: "main", Enabled: true, Action: config.ActionTypeConnection, CommunityLists: []string{"x"}}}
+	cfg.CommunityLists = []config.CommunityList{{Name: "x", Entries: []string{"github.com"}}}
+	cfg.Settings.DownloadComponentsViaProxy = true
+	cfg.Settings.DownloadComponentsViaProxySection = "main"
+
+	c := ConfigFromSettings(cfg, testNodes(t))
+	rules := c.Route.Rules
+	at := -1
+	for i, r := range rules {
+		if in, ok := r["inbound"].([]string); ok && len(in) == 1 && in[0] == "service-mixed-in" {
+			at = i
+			if r["outbound"] != "main" {
+				t.Errorf("mixed inbound routed to %v, want main", r["outbound"])
+			}
+		}
+	}
+	if at < 0 {
+		t.Fatalf("no rule for service-mixed-in: %v", rules)
+	}
+	for _, r := range rules[:at] {
+		if r["action"] != "sniff" && r["action"] != "hijack-dns" {
+			t.Errorf("rule %v precedes the component download rule", r)
+		}
+	}
+
+	cfg.Settings.DownloadComponentsViaProxySection = "missing"
+	if c := ConfigFromSettings(cfg, testNodes(t)); !warned(c, "download_components_via_proxy_section") {
+		t.Errorf("expected a warning for a missing section, got %v", c.Warnings)
+	}
+}
