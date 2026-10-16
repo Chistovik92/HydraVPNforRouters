@@ -36,6 +36,8 @@ func (s *Server) manageRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/settings", s.handleSettingsGet)
 	mux.HandleFunc("PATCH /api/v1/settings", s.handleSettingsPatch)
+	// The same for clients without PATCH (java.net.HttpURLConnection).
+	mux.HandleFunc("POST /api/v1/settings", s.handleSettingsPatch)
 }
 
 // ---------------------------------------------------------------- helpers

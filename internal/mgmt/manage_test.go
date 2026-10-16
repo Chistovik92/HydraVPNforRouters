@@ -112,6 +112,9 @@ func TestSettingsPatch(t *testing.T) {
 	if code, body := call(t, ts, token, "PATCH", "/api/v1/settings", patch); code != 200 {
 		t.Fatalf("patch: %d %s", code, body)
 	}
+	if code, body := call(t, ts, token, "POST", "/api/v1/settings", map[string]interface{}{"exclude_ntp": true}); code != 200 || !eng.cfg.Settings.ExcludeNTP {
+		t.Fatalf("post: %d %s", code, body)
+	}
 	st := eng.cfg.Settings
 	if !st.DisableQUIC || st.UpdateInterval != 6*time.Hour || len(st.DNSServers) != 1 {
 		t.Errorf("settings: quic=%v interval=%v dns=%v", st.DisableQUIC, st.UpdateInterval, st.DNSServers)
