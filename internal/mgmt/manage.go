@@ -272,7 +272,8 @@ func (s *Server) handleListsDelete(w http.ResponseWriter, r *http.Request) {
 // point the service at arbitrary files) and bookkeeping.
 var readOnly = map[string]bool{
 	"api_listen": true, "api_token": true, "api_allow": true, "api_tls_cert": true, "api_tls_key": true,
-	"singbox_binary": true, "config_path": true, "cache_path": true, "log_file": true,
+	"singbox_binary": true, "xray_binary": true, "openflux_binary": true, "olcrtc_binary": true, "amneziawg_binary": true,
+	"config_path": true, "cache_path": true, "log_file": true,
 	"config_version": true, "applied_migrations": true,
 }
 

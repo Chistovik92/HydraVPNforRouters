@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/cores"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
 
@@ -99,6 +100,10 @@ type OutboundInfo struct {
 	// Raw holds a complete sing-box outbound (JSON subscriptions); it is
 	// used as is instead of being built from the fields above.
 	Raw map[string]interface{} `json:"raw,omitempty"`
+	// Core is set for nodes sing-box cannot run itself (Xray, OpenFlux,
+	// olcRTC, AmneziaWG); Link is then the original link the core gets.
+	Core string `json:"core,omitempty"`
+	Link string `json:"link,omitempty"`
 }
 
 // SubscriptionMetadata represents subscription metadata for UI
@@ -570,6 +575,10 @@ func ParseSubscription(content string) ([]OutboundInfo, error) {
 
 		switch {
 		case strings.Contains(line, "://"):
+			if n, ok := cores.Detect(line); ok {
+				outbounds = append(outbounds, OutboundInfo{Name: n.Name, Type: string(n.Kind), Core: string(n.Kind), Link: n.Link})
+				continue
+			}
 			if ob, err := parseURI(line); err == nil {
 				outbounds = append(outbounds, ob)
 			}

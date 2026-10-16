@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Chistovik92/hydravpn-router/internal/components"
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/cores"
 	"github.com/Chistovik92/hydravpn-router/internal/dns"
 	"github.com/Chistovik92/hydravpn-router/internal/dnsredirect"
 	"github.com/Chistovik92/hydravpn-router/internal/firewall"
@@ -63,6 +65,7 @@ type Engine struct {
 	dnsRedirect     *dnsredirect.Redirect
 	wan             *wanmon.Monitor
 	comps           *components.Checker
+	cores           *cores.Manager
 
 	// Status tracking
 	startTime   time.Time
@@ -114,6 +117,8 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	e.listsMgr = lists.NewManager(lists.Options{Config: e.config, OnLog: e.log, OnUpdate: notify})
 	e.dnsRedirect = dnsredirect.New(e.log)
 	e.comps = components.New(e.config, e.log)
+	e.cores = cores.NewManager(cores.Options{Dir: filepath.Join(filepath.Dir(config.PidFile(e.config, "x")), "cores"),
+		LogLevel: "warning", OnLog: e.log})
 
 	return e, nil
 }
@@ -265,13 +270,14 @@ func (e *Engine) onWANChange(iface, reason string) {
 // singboxConfig renders the sing-box configuration for the current settings
 // and the subscription nodes fetched so far.
 func (e *Engine) singboxConfig() *singbox.Config {
-	return singbox.ConfigFromSettings(e.config, e.subscriptionMgr, singbox.WithLists(e.listsMgr))
+	return singbox.ConfigFromSettings(e.config, e.subscriptionMgr, singbox.WithLists(e.listsMgr), singbox.WithCores(e.applyCores()))
 }
 
 // stopComponents stops everything in reverse order; stopping a component
 // that was never started is a no-op.
 func (e *Engine) stopComponents() {
 	e.comps.Stop()
+	e.cores.Stop()
 	e.stopWANMonitor()
 	if err := e.dnsRedirect.Remove(); err != nil {
 		e.log("warn", "dnsmasq restore: "+err.Error())
@@ -410,6 +416,7 @@ func (e *Engine) GetStatus() map[string]interface{} {
 	status["subscriptions"] = e.subscriptionMgr.GetStatus()
 	status["lists"] = e.listsMgr.GetStatus()
 	status["components"] = e.comps.GetStatus()
+	status["cores"] = e.cores.Status()
 
 	// Callers add fields to the returned map; keep a private copy.
 	snapshot := make(map[string]interface{}, len(status))

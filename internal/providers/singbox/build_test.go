@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/cores"
 	"github.com/Chistovik92/hydravpn-router/internal/lists"
 	"github.com/Chistovik92/hydravpn-router/internal/subscription"
 )
@@ -448,5 +449,33 @@ func TestComponentDownloadsGoThroughChosenSection(t *testing.T) {
 	cfg.Settings.DownloadComponentsViaProxySection = "missing"
 	if c := ConfigFromSettings(cfg, testNodes(t)); !warned(c, "download_components_via_proxy_section") {
 		t.Errorf("expected a warning for a missing section, got %v", c.Warnings)
+	}
+}
+
+func TestCoreNodesReachTheirCore(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sections = []config.Section{{Name: "main", Enabled: true, Action: config.ActionTypeConnection, CommunityLists: []string{"x"}}}
+	cfg.CommunityLists = []config.CommunityList{{Name: "x", Entries: []string{"example.com"}}}
+	link := "vless://11111111-2222-3333-4444-555555555555@x.example.com:443?type=xhttp&security=tls#XH"
+	obs, err := subscription.ParseSubscription(link)
+	if err != nil || len(obs) != 1 || obs[0].Core != "xray" {
+		t.Fatalf("parse: %v %+v", err, obs)
+	}
+	nodes := fakeNodes{"main": obs}
+
+	if c := ConfigFromSettings(cfg, nodes); !warned(c, "need the core manager") {
+		t.Errorf("without a plan the node must be skipped with a warning: %v", c.Warnings)
+	}
+
+	plan := cores.NewPlan([]cores.Node{{Kind: cores.Xray, Name: "XH", Link: link}}, cores.Binaries{cores.Xray: "/bin/xray"})
+	c := ConfigFromSettings(cfg, nodes, WithCores(plan))
+	found := false
+	for _, ob := range c.Outbounds {
+		if ob["tag"] == "XH" {
+			found = ob["type"] == "socks" && ob["server_port"] == cores.BasePort
+		}
+	}
+	if !found {
+		t.Errorf("no socks outbound for the xray node: %v", c.Outbounds)
 	}
 }

@@ -93,20 +93,27 @@ type Config struct {
 
 // Settings represents global settings
 type Settings struct {
-	ConfigVersion                     string        `yaml:"config_version" json:"config_version"`
-	AppliedMigrations                 []string      `yaml:"applied_migrations" json:"applied_migrations"`
-	DNSType                           string        `yaml:"dns_type" json:"dns_type"`
-	DNSServers                        []string      `yaml:"dns_server" json:"dns_server"`
-	BootstrapDNSServers               []string      `yaml:"bootstrap_dns_server" json:"bootstrap_dns_server"`
-	DNSCheckInterval                  time.Duration `yaml:"dns_check_interval" json:"dns_check_interval"`
-	DNSRecoveryCheckInterval          time.Duration `yaml:"dns_recovery_check_interval" json:"dns_recovery_check_interval"`
-	DNSCheckTimeout                   time.Duration `yaml:"dns_check_timeout" json:"dns_check_timeout"`
-	DNSRewriteTTL                     int           `yaml:"dns_rewrite_ttl" json:"dns_rewrite_ttl"`
-	DNSStrategy                       DNSStrategy   `yaml:"dns_strategy" json:"dns_strategy"`
-	DNSDetourEnabled                  bool          `yaml:"dns_detour_enabled" json:"dns_detour_enabled"`
-	DNSDetourSection                  string        `yaml:"dns_detour_section" json:"dns_detour_section"`
-	FakeIPEnabled                     bool          `yaml:"fakeip_enabled" json:"fakeip_enabled"`
-	SingBoxBinary                     string        `yaml:"singbox_binary" json:"singbox_binary"`
+	ConfigVersion            string        `yaml:"config_version" json:"config_version"`
+	AppliedMigrations        []string      `yaml:"applied_migrations" json:"applied_migrations"`
+	DNSType                  string        `yaml:"dns_type" json:"dns_type"`
+	DNSServers               []string      `yaml:"dns_server" json:"dns_server"`
+	BootstrapDNSServers      []string      `yaml:"bootstrap_dns_server" json:"bootstrap_dns_server"`
+	DNSCheckInterval         time.Duration `yaml:"dns_check_interval" json:"dns_check_interval"`
+	DNSRecoveryCheckInterval time.Duration `yaml:"dns_recovery_check_interval" json:"dns_recovery_check_interval"`
+	DNSCheckTimeout          time.Duration `yaml:"dns_check_timeout" json:"dns_check_timeout"`
+	DNSRewriteTTL            int           `yaml:"dns_rewrite_ttl" json:"dns_rewrite_ttl"`
+	DNSStrategy              DNSStrategy   `yaml:"dns_strategy" json:"dns_strategy"`
+	DNSDetourEnabled         bool          `yaml:"dns_detour_enabled" json:"dns_detour_enabled"`
+	DNSDetourSection         string        `yaml:"dns_detour_section" json:"dns_detour_section"`
+	FakeIPEnabled            bool          `yaml:"fakeip_enabled" json:"fakeip_enabled"`
+	SingBoxBinary            string        `yaml:"singbox_binary" json:"singbox_binary"`
+	// Cores for nodes sing-box cannot run (empty: looked up in PATH,
+	// /opt/sbin, /opt/bin, /usr/bin, ... and the versions the service
+	// installed itself).
+	XrayBinary                        string        `yaml:"xray_binary" json:"xray_binary"`
+	OpenFluxBinary                    string        `yaml:"openflux_binary" json:"openflux_binary"`
+	OlcRTCBinary                      string        `yaml:"olcrtc_binary" json:"olcrtc_binary"`
+	AmneziaWGBinary                   string        `yaml:"amneziawg_binary" json:"amneziawg_binary"`
 	SourceNetworkInterfaces           []string      `yaml:"source_network_interfaces" json:"source_network_interfaces"`
 	EnableOutputNetworkInterface      bool          `yaml:"enable_output_network_interface" json:"enable_output_network_interface"`
 	OutputNetworkInterface            string        `yaml:"output_network_interface" json:"output_network_interface"`
