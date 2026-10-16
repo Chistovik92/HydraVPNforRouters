@@ -61,6 +61,7 @@ var CLI struct {
 	DomainMap DomainMapCmd `cmd:"" name:"domainmap" help:"Resolve domains to IP routes (Keenetic, MikroTik, WireGuard, OpenVPN, nft ...)"`
 	GenConfig GenConfigCmd `cmd:"" name:"genconfig" help:"Build an Xray or sing-box config from a vless:// trojan:// ss:// link"`
 	Keenetic  KeeneticCmd  `cmd:"" name:"keenetic" help:"KeeneticOS helpers (ndmc): interfaces, proxy interface"`
+	Core      CoreCmd      `cmd:"" help:"Install and switch versions of sing-box, Xray and the other cores"`
 }
 
 type StartCmd struct {

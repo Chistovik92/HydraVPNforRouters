@@ -207,8 +207,29 @@ func TestInstallRefusesABadChecksum(t *testing.T) {
 	if _, err := os.Lstat(inst.Link(SingBox)); err == nil {
 		t.Error("a binary with a wrong checksum became active")
 	}
-	if err := inst.Start(OpenFlux, "1"); err == nil {
-		t.Error("openflux version accepted")
+	if err := inst.Start(Kind("nope"), "1"); err == nil {
+		t.Error("an unknown core accepted")
+	}
+}
+
+func TestInstallBundledCoreFromOurRelease(t *testing.T) {
+	gh := newFakeGitHub(t)
+	gh.add(BundleRepo, "v1.3.0", false, map[string][]byte{"core-amneziawg-go-linux-arm64": []byte("amneziawg-go binary")})
+	gh.add(BundleRepo, "v1.2.5", false, map[string][]byte{"hydravpn-router-1.2.5-openwrt-arm64": []byte("x")})
+	inst, done := newTestInstaller(t, gh, "arm64")
+	rels, err := inst.Releases(context.Background(), AmneziaWG)
+	if err != nil || len(rels) != 1 || rels[0].Version != "1.3.0" {
+		t.Fatalf("releases without the core must be skipped: %v %+v", err, rels)
+	}
+	if err := inst.Start(AmneziaWG, "1.3.0"); err != nil {
+		t.Fatal(err)
+	}
+	if st := waitDone(t, inst, AmneziaWG); st.State != "done" {
+		t.Fatalf("%+v", st)
+	}
+	<-done
+	if data, _ := os.ReadFile(inst.Link(AmneziaWG)); string(data) != "amneziawg-go binary" {
+		t.Errorf("installed %q", data)
 	}
 }
 

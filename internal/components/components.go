@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/cores"
 	"github.com/Chistovik92/hydravpn-router/internal/selfupdate"
 	"github.com/Chistovik92/hydravpn-router/pkg/version"
 )
@@ -26,12 +27,20 @@ type Component struct {
 	Repo       string // GitHub owner/name
 	MinVersion string // oldest version the generated configs work with
 	Tested     string // newest major.minor the configs were tested with (see docs/components.tsv)
+	// Binary returns the executable to ask for its version ("" = skip).
+	Binary func(cfg *config.Config) string
+	// AnyRelease: upstream marks every release pre-release (Xray), so
+	// the newest release is taken instead of /releases/latest.
+	AnyRelease bool
 }
 
 // Tracked are the components whose versions are checked. Keep in sync with
 // docs/COMPONENTS.md.
 var Tracked = []Component{
-	{Name: "sing-box", Repo: "SagerNet/sing-box", MinVersion: "1.12.0", Tested: "1.14"},
+	{Name: "sing-box", Repo: "SagerNet/sing-box", MinVersion: "1.12.0", Tested: "1.14",
+		Binary: func(c *config.Config) string { return c.Settings.SingBoxBinary }},
+	{Name: "xray", Repo: "XTLS/Xray-core", Tested: "26.10", AnyRelease: true,
+		Binary: func(c *config.Config) string { return cores.FindBinary(cores.Xray, c.Settings.XrayBinary) }},
 }
 
 // Info is the result for one component.
@@ -145,7 +154,10 @@ func (c *Checker) CheckAll(ctx context.Context) {
 
 	for _, comp := range Tracked {
 		info := Info{Name: comp.Name, Checked: time.Now().Format(time.RFC3339)}
-		bin := cfg.Settings.SingBoxBinary
+		bin := comp.Binary(cfg)
+		if bin == "" {
+			continue // not installed: nothing to compare (Xray is optional)
+		}
 		if v, err := c.installed(bin); err != nil {
 			info.Error = err.Error()
 		} else {
@@ -153,7 +165,11 @@ func (c *Checker) CheckAll(ctx context.Context) {
 			info.TooOld = comp.MinVersion != "" && Compare(v, comp.MinVersion) < 0
 			info.Untested = comp.Tested != "" && Compare(majorMinor(v), comp.Tested) > 0
 		}
-		if latest, err := c.latest(ctx, comp.Repo, proxy); err != nil {
+		repo := comp.Repo
+		if comp.AnyRelease {
+			repo += anyReleaseMark
+		}
+		if latest, err := c.latest(ctx, repo, proxy); err != nil {
 			if info.Error == "" {
 				info.Error = err.Error()
 			}
@@ -202,8 +218,16 @@ func installedVersion(binary string) (string, error) {
 	return v, nil
 }
 
+// anyReleaseMark asks latestRelease for the newest release of a repo
+// whatever its pre-release flag.
+const anyReleaseMark = "#any"
+
 func latestRelease(ctx context.Context, repo, proxy string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
+	path := "/releases/latest"
+	if r, ok := strings.CutSuffix(repo, anyReleaseMark); ok {
+		repo, path = r, "/releases?per_page=1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repo+path, nil)
 	if err != nil {
 		return "", err
 	}
@@ -219,11 +243,19 @@ func latestRelease(ctx context.Context, repo, proxy string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GitHub API: HTTP %d", resp.StatusCode)
 	}
-	var rel struct {
-		Tag        string `json:"tag_name"`
-		Prerelease bool   `json:"prerelease"`
+	type release struct {
+		Tag string `json:"tag_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	var rel release
+	if path == "/releases/latest" {
+		err = json.NewDecoder(resp.Body).Decode(&rel)
+	} else {
+		var list []release
+		if err = json.NewDecoder(resp.Body).Decode(&list); err == nil && len(list) > 0 {
+			rel = list[0]
+		}
+	}
+	if err != nil {
 		return "", err
 	}
 	v := Parse(rel.Tag)

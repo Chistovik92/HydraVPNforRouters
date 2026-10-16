@@ -26,10 +26,30 @@ import (
 // node core, so it is not in Kinds).
 const SingBox Kind = "sing-box"
 
-// Installable lists the cores whose version can be chosen.
-var Installable = []Kind{SingBox, Xray}
+// Installable lists the cores the service can install, in display order.
+var Installable = []Kind{SingBox, Xray, OpenFlux, OlcRTC, AmneziaWG}
 
-var repos = map[Kind]string{SingBox: "SagerNet/sing-box", Xray: "XTLS/Xray-core"}
+// BundleRepo publishes the cores that have no router builds upstream
+// (amneziawg-go, olcRTC, OpenFlux for every router CPU): the release
+// workflow builds them from pinned sources (scripts/build-cores.sh) as
+// core-<binary>-linux-<arch> files of each release.
+const BundleRepo = "Chistovik92/HydraVPNforRouters"
+
+// source is where a core's builds come from.
+type source struct {
+	repo string
+	// upstream: the version is the upstream release and the binary
+	// reports it; otherwise the version is our release that carries it.
+	upstream bool
+}
+
+var sources = map[Kind]source{
+	SingBox:   {repo: "SagerNet/sing-box", upstream: true},
+	Xray:      {repo: "XTLS/Xray-core", upstream: true},
+	OpenFlux:  {repo: BundleRepo},
+	OlcRTC:    {repo: BundleRepo},
+	AmneziaWG: {repo: BundleRepo},
+}
 
 const (
 	maxArchive   = 150 << 20
@@ -69,7 +89,7 @@ type InstallerOptions struct {
 	Verify        func(ctx context.Context, bin, version string) error
 }
 
-// Installer downloads and switches versions of sing-box and Xray.
+// Installer downloads and switches versions of sing-box and the cores.
 type Installer struct {
 	o      InstallerOptions
 	mu     sync.Mutex
@@ -148,17 +168,17 @@ func (i *Installer) get(ctx context.Context, path string, v interface{}) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GitHub API: HTTP %d", resp.StatusCode)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(v)
+	return json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(v)
 }
 
 // Releases lists recent versions of k, betas included, newest first.
 func (i *Installer) Releases(ctx context.Context, k Kind) ([]Release, error) {
-	repo, ok := repos[k]
+	src, ok := sources[k]
 	if !ok {
-		return nil, fmt.Errorf("%s: versions cannot be chosen", k)
+		return nil, fmt.Errorf("%s cannot be installed", k)
 	}
 	var rels []ghRelease
-	if err := i.get(ctx, "/repos/"+repo+"/releases?per_page=40", &rels); err != nil {
+	if err := i.get(ctx, "/repos/"+src.repo+"/releases?per_page=20", &rels); err != nil {
 		return nil, err
 	}
 	var out []Release
@@ -214,6 +234,15 @@ func assetName(k Kind, version, goarch, goarm string) (string, error) {
 			break
 		}
 		return "Xray-linux-" + arch + ".zip", nil
+	default:
+		if _, ok := sources[k]; !ok {
+			break
+		}
+		arch, err := selfupdate.ArchLabel("linux", goarch, goarm)
+		if err != nil {
+			break
+		}
+		return "core-" + BinaryName(k) + "-linux-" + arch, nil
 	}
 	return "", fmt.Errorf("%s: no build for linux/%s", k, goarch)
 }
@@ -241,13 +270,52 @@ func (i *Installer) set(k Kind, fn func(*InstallStatus)) {
 	i.mu.Unlock()
 }
 
+// PickVersion turns "latest" (newest stable) and "beta" (newest, betas
+// included) into a version; anything else is returned as is.
+func (i *Installer) PickVersion(ctx context.Context, k Kind, v string) (string, error) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if v != "latest" && v != "beta" && v != "" {
+		return v, nil
+	}
+	rels, err := i.Releases(ctx, k)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range rels {
+		if v == "beta" || !r.Prerelease {
+			return r.Version, nil
+		}
+	}
+	// A long series of betas can push every stable release off the page.
+	var rel ghRelease
+	if err := i.get(ctx, "/repos/"+sources[k].repo+"/releases/latest", &rel); err == nil && rel.Tag != "" {
+		return strings.TrimPrefix(rel.Tag, "v"), nil
+	}
+	return "", fmt.Errorf("%s: no release with a build for this device", k)
+}
+
+// InstallNow installs synchronously (the CLI and install.sh).
+func (i *Installer) InstallNow(ctx context.Context, k Kind, version string) (string, error) {
+	if _, ok := sources[k]; !ok {
+		return "", fmt.Errorf("%s cannot be installed", k)
+	}
+	v, err := i.PickVersion(ctx, k, version)
+	if err != nil {
+		return "", err
+	}
+	if err := i.install(ctx, k, v); err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
 // ErrInstallBusy means an install of the core is already running.
 var ErrInstallBusy = errors.New("an install of this core is already running")
 
 // Start installs version of k in the background (Status follows it).
 func (i *Installer) Start(k Kind, version string) error {
-	if _, ok := repos[k]; !ok {
-		return fmt.Errorf("%s: versions cannot be chosen", k)
+	if _, ok := sources[k]; !ok {
+		return fmt.Errorf("%s cannot be installed", k)
 	}
 	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if version == "" || strings.ContainsAny(version, "/\\ ") {
@@ -270,7 +338,12 @@ func (i *Installer) Start(k Kind, version string) error {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
-		if err := i.install(ctx, k, version); err != nil {
+		version, err := i.PickVersion(ctx, k, version)
+		if err == nil {
+			i.set(k, func(s *InstallStatus) { s.Version = version })
+			err = i.install(ctx, k, version)
+		}
+		if err != nil {
 			i.set(k, func(s *InstallStatus) { s.State, s.Error = "failed", err.Error() })
 			i.log("error", "%s %s: %v", k, version, err)
 			return
@@ -288,13 +361,19 @@ func (i *Installer) Start(k Kind, version string) error {
 }
 
 func (i *Installer) install(ctx context.Context, k Kind, version string) error {
+	src := sources[k]
+	// Bundled builds do not know our release number: only check they run.
+	reported := version
+	if !src.upstream {
+		reported = ""
+	}
 	// A version still kept on the device (rollback) needs no download.
 	kept := filepath.Join(i.o.Dir, "versions", string(k), version, BinaryName(k))
-	if _, err := os.Stat(kept); err == nil && i.o.Verify(ctx, kept, version) == nil {
+	if _, err := os.Stat(kept); err == nil && i.o.Verify(ctx, kept, reported) == nil {
 		return activate(i.Link(k), kept)
 	}
 	var rel ghRelease
-	if err := i.get(ctx, "/repos/"+repos[k]+"/releases/tags/v"+version, &rel); err != nil {
+	if err := i.get(ctx, "/repos/"+src.repo+"/releases/tags/v"+version, &rel); err != nil {
 		return fmt.Errorf("release v%s: %w", version, err)
 	}
 	asset, err := assetFor(k, version, rel.Assets, i.o.GOARCH, i.o.GOARM)
@@ -318,7 +397,7 @@ func (i *Installer) install(ctx context.Context, k Kind, version string) error {
 	err = extract(archive, bin, k, i.o.GOARCH)
 	os.Remove(archive) // only the binary is kept: flash is small
 	if err == nil {
-		err = i.o.Verify(ctx, bin, version)
+		err = i.o.Verify(ctx, bin, reported)
 	}
 	if err != nil {
 		os.RemoveAll(verDir)
@@ -331,9 +410,13 @@ func (i *Installer) install(ctx context.Context, k Kind, version string) error {
 	return nil
 }
 
-// extract writes the core binary from a sing-box .tar.gz or an Xray .zip.
-// On MIPS the Xray zip has xray_softfloat next to xray; routers need it.
+// extract writes the core binary from a sing-box .tar.gz, an Xray .zip or
+// a bare binary (bundled cores). On MIPS the Xray zip has xray_softfloat
+// next to xray; routers need it.
 func extract(archive, dst string, k Kind, goarch string) error {
+	if !strings.HasSuffix(archive, ".zip") && !strings.HasSuffix(archive, ".tar.gz") {
+		return os.Rename(archive, dst)
+	}
 	want := map[string]bool{BinaryName(k): true}
 	if k == Xray && strings.HasPrefix(goarch, "mips") {
 		want = map[string]bool{"xray_softfloat": true}
@@ -396,10 +479,19 @@ func extract(archive, dst string, k Kind, goarch string) error {
 }
 
 // verifyVersion runs the new binary: it must start on this CPU and report
-// the version that was asked for.
+// the version that was asked for. With no version (bundled builds) it only
+// has to start: --help may well exit with an error.
 func verifyVersion(ctx context.Context, bin, version string) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	if version == "" {
+		cmd := exec.CommandContext(ctx, bin, "--help")
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("the downloaded binary does not run on this device: %v", err)
+		}
+		cmd.Wait()
+		return nil
+	}
 	out, err := exec.CommandContext(ctx, bin, "version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("the downloaded binary does not run on this device: %v", err)

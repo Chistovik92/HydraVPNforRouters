@@ -145,14 +145,27 @@ func TestWireGuard(t *testing.T) {
 	if !c.Amnezia() || c.MTU() != "1280" || len(c.Addresses()) != 2 {
 		t.Errorf("%+v", c)
 	}
-	sc := c.SetConf()
-	for _, bad := range []string{"address", "dns", "mtu"} {
-		if strings.Contains(sc, bad+" =") {
-			t.Errorf("setconf keeps %s:\n%s", bad, sc)
+	if _, err := c.UAPI(nil); err == nil || !strings.Contains(err.Error(), "bad key") {
+		t.Errorf("a 7-byte key must be refused: %v", err)
+	}
+	real := strings.NewReplacer("cHJpdmF0ZQ==", "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWY=",
+		"cHVibGlj", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", "203.0.113.1", "vpn.example").Replace(awgConf)
+	rc, err := ParseWireGuard(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := rc.UAPI(func(host string) (string, error) { return "198.51.100.7", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"set=1\n", "private_key=6162636465666768696a6b6c6d6e6f707172737475767778797a616263646566\n",
+		"jc=4\n", "h1=1\n", "replace_peers=true\n", "endpoint=198.51.100.7:51820\n", "allowed_ip=0.0.0.0/0\n"} {
+		if !strings.Contains(req, want) {
+			t.Errorf("uapi misses %q:\n%s", want, req)
 		}
 	}
-	if !strings.Contains(sc, "jc = 4") || !strings.Contains(sc, "endpoint = 203.0.113.1:51820") {
-		t.Errorf("setconf:\n%s", sc)
+	if !strings.HasSuffix(req, "\n\n") || strings.Contains(req, "address") || strings.Contains(req, "mtu") {
+		t.Errorf("uapi request:\n%s", req)
 	}
 	if r := WireGuardResolver(awgLink()); r != "9.9.9.9" {
 		t.Errorf("resolver %s", r)

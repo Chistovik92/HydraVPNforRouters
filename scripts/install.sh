@@ -471,6 +471,28 @@ install_dependencies() {
     esac
 }
 
+# install_cores - sing-box from its GitHub release, built for this router,
+# when the package is missing or older than the version the configs are
+# tested with (packages are often behind). SINGBOX_VERSION=beta or x.y.z
+# chooses another version; XRAY_VERSION=latest|beta|x.y.z installs Xray too.
+# Later: web UI, the Hydra app or "hydravpn-router core install".
+SINGBOX_MIN=1.14.0
+install_cores() {
+    [ -n "$BIN" ] && [ -x "$BIN" ] || return 0
+    conf="$CONFIG_DIR/config.yaml"
+    have=$(sing-box version 2>/dev/null | head -n 1 | awk '{print $3}')
+    if [ -z "${SINGBOX_VERSION:-}" ] && [ -n "$have" ] && ! version_gt "$SINGBOX_MIN" "$have"; then
+        log_ok "sing-box $have"
+    elif "$BIN" core install sing-box "${SINGBOX_VERSION:-latest}" -c "$conf"; then
+        log_ok "sing-box ${SINGBOX_VERSION:-latest} installed from its release"
+    else
+        log_warn "Could not install sing-box from its release; the package version stays (${have:-none})"
+    fi
+    if [ -n "${XRAY_VERSION:-}" ]; then
+        "$BIN" core install xray "$XRAY_VERSION" -c "$conf" || log_warn "Could not install Xray $XRAY_VERSION"
+    fi
+}
+
 do_install_binary() {
     download_binary
     was_running=0
@@ -485,6 +507,7 @@ do_install_binary() {
 
     install_dependencies
     write_default_config
+    install_cores
     install_service
 
     if [ "$was_running" = "1" ] || [ "$UPDATE" = "0" ]; then

@@ -188,6 +188,24 @@ func runningInContainer() bool {
 	return os.Getenv("container") != ""
 }
 
+// ArchLabel names a Linux architecture as release files do (amd64, arm64,
+// armv7, armv6, armv5, mips, mipsle, 386, ...).
+func ArchLabel(goos, goarch, arm string) (string, error) {
+	switch goos + "/" + goarch {
+	case "linux/amd64", "linux/arm64", "linux/386", "linux/mips", "linux/mipsle", "linux/mips64", "linux/mips64le":
+		return goarch, nil
+	case "linux/arm":
+		switch arm {
+		case "7":
+			return "armv7", nil
+		case "5":
+			return "armv5", nil
+		}
+		return "armv6", nil
+	}
+	return "", fmt.Errorf("no release builds for %s/%s", goos, goarch)
+}
+
 // Release files are named after the OS they are installed on:
 // hydravpn-router-<version>-<flavor>-<arch>.
 const (
@@ -221,22 +239,12 @@ func AssetName(ver, goos, goarch, arm string) (string, error) {
 // AssetNameFor returns the release file for an OS family, matching
 // scripts/build.sh.
 func AssetNameFor(flavor, ver, goos, goarch, arm string) (string, error) {
-	suffix := goarch
-	switch goos + "/" + goarch {
-	case "linux/amd64", "linux/arm64", "linux/386", "linux/mips", "linux/mipsle", "linux/mips64", "linux/mips64le":
-	case "linux/arm":
-		switch arm {
-		case "7":
-			suffix = "armv7"
-		case "5":
-			suffix = "armv5"
-		default:
-			suffix = "armv6"
-		}
-	case "windows/amd64":
+	if goos+"/"+goarch == "windows/amd64" {
 		return "hydravpn-router-" + ver + "-windows-amd64.exe", nil
-	default:
-		return "", fmt.Errorf("no release builds for %s/%s", goos, goarch)
+	}
+	suffix, err := ArchLabel(goos, goarch, arm)
+	if err != nil {
+		return "", err
 	}
 	if flavor == "" {
 		flavor = FlavorLinux

@@ -1,7 +1,10 @@
 package cores
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -148,25 +151,90 @@ func wireGuardURI(body string) (string, bool) {
 	return b.String(), true
 }
 
-// wgQuickOnly are wg-quick keys that `awg setconf` rejects; they are applied
-// with ip(8) instead.
-var wgQuickOnly = map[string]bool{"address": true, "dns": true, "mtu": true, "table": true,
-	"preup": true, "postup": true, "predown": true, "postdown": true, "saveconfig": true}
+// uapiKeys maps .conf keys of the interface to amneziawg-go UAPI keys
+// (device/uapi.go); base64 keys go as hex, booleans as 1/0.
+var uapiKeys = map[string]string{
+	"jc": "jc", "jmin": "jmin", "jmax": "jmax", "s1": "s1", "s2": "s2", "s3": "s3", "s4": "s4",
+	"h1": "h1", "h2": "h2", "h3": "h3", "h4": "h4", "i1": "i1", "i2": "i2", "i3": "i3", "i4": "i4", "i5": "i5",
+	"headerprotectionkey": "header_protection_key", "contentpaddingaddition": "content_padding_addition",
+	"rekeyaftertime": "rekey_after_time", "rekeytimeout": "rekey_timeout", "rejectaftertime": "reject_after_time",
+	"keepalivetimeout": "keepalive_timeout", "maxhandshakeattempts": "max_handshake_attempts",
+	"randomtrailers": "random_trailers", "disablecookies": "disable_cookies",
+}
 
-// SetConf renders the config for `awg setconf`.
-func (c WireGuardConf) SetConf() string {
+var uapiBool = map[string]bool{"random_trailers": true, "disable_cookies": true}
+
+func keyHex(b64 string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil || len(raw) != 32 {
+		return "", fmt.Errorf("wireguard: bad key %q", b64)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// UAPI renders the "set=1" request amneziawg-go reads from its control
+// socket (what `awg setconf` sends), so no awg tool is needed on the router.
+// resolve turns the endpoint host into an address (UAPI takes IP:port only).
+func (c WireGuardConf) UAPI(resolve func(host string) (string, error)) (string, error) {
 	var b strings.Builder
-	b.WriteString("[Interface]\n")
+	set := func(k, v string) { b.WriteString(k + "=" + v + "\n") }
+	set("set", "1")
+	priv, err := keyHex(c.Interface["privatekey"])
+	if err != nil {
+		return "", err
+	}
+	set("private_key", priv)
+	if p := c.Interface["listenport"]; p != "" {
+		set("listen_port", p)
+	}
 	for _, k := range c.ifaceOrder {
-		if !wgQuickOnly[k] {
-			b.WriteString(k + " = " + c.Interface[k] + "\n")
+		uk, ok := uapiKeys[k]
+		if !ok {
+			continue
+		}
+		v := c.Interface[k]
+		switch {
+		case uapiBool[uk]:
+			v = map[bool]string{true: "1", false: "0"}[strings.EqualFold(v, "on") || strings.EqualFold(v, "true") || v == "1"]
+		case uk == "header_protection_key":
+			if v, err = keyHex(v); err != nil {
+				return "", err
+			}
+		}
+		set(uk, v)
+	}
+	pub, err := keyHex(c.Peer["publickey"])
+	if err != nil {
+		return "", err
+	}
+	set("replace_peers", "true")
+	set("public_key", pub)
+	if psk := c.Peer["presharedkey"]; psk != "" {
+		h, err := keyHex(psk)
+		if err != nil {
+			return "", err
+		}
+		set("preshared_key", h)
+	}
+	host, port, err := net.SplitHostPort(c.Peer["endpoint"])
+	if err != nil {
+		return "", fmt.Errorf("wireguard: endpoint %q: %w", c.Peer["endpoint"], err)
+	}
+	if net.ParseIP(host) == nil {
+		if host, err = resolve(host); err != nil {
+			return "", fmt.Errorf("wireguard: resolve %s: %w", c.Peer["endpoint"], err)
 		}
 	}
-	b.WriteString("\n[Peer]\n")
-	for _, k := range c.peerOrder {
-		b.WriteString(k + " = " + c.Peer[k] + "\n")
+	set("endpoint", net.JoinHostPort(host, port))
+	if ka := c.Peer["persistentkeepalive"]; ka != "" {
+		set("persistent_keepalive_interval", ka)
 	}
-	return b.String()
+	set("replace_allowed_ips", "true")
+	for _, ip := range splitList(firstOf(c.Peer["allowedips"], "0.0.0.0/0, ::/0")) {
+		set("allowed_ip", ip)
+	}
+	b.WriteString("\n") // an empty line ends the request
+	return b.String(), nil
 }
 
 // Addresses are the interface addresses (Address = a, b).

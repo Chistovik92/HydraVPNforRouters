@@ -121,7 +121,7 @@ func (s *Server) installableCore(w http.ResponseWriter, r *http.Request) (cores.
 			return k, true
 		}
 	}
-	writeErr(w, 404, errors.New("the version of this core cannot be chosen (only sing-box and xray)"))
+	writeErr(w, 404, errors.New("unknown core (sing-box, xray, openflux, olcrtc, amneziawg)"))
 	return "", false
 }
 

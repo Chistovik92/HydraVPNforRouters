@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,8 @@ type spec struct {
 	args      []string
 	files     map[string]string // path -> content
 	inst      *Instance         // AmneziaWG: interface to configure
+	wg        *WireGuardConf    // AmneziaWG: its config
+	identity  string            // extra input of the signature
 	signature string
 }
 
@@ -58,11 +61,13 @@ type Manager struct {
 	last  *Plan
 	// run executes helper commands (awg, ip); replaced in tests.
 	run func(name string, args ...string) error
+	// uapi writes a request to an amneziawg-go control socket.
+	uapi func(socket, req string) error
 }
 
 // NewManager creates a Manager.
 func NewManager(opts Options) *Manager {
-	return &Manager{opts: opts, procs: map[string]*running{}, run: runCommand}
+	return &Manager{opts: opts, procs: map[string]*running{}, run: runCommand, uapi: writeUAPI}
 }
 
 func runCommand(name string, args ...string) error {
@@ -130,8 +135,7 @@ func (m *Manager) startLocked(s spec) error {
 	sup := &process.Supervisor{Name: s.key, RespawnDelay: respawnDelay, OnLog: m.opts.OnLog,
 		PidFile: filepath.Join(m.opts.Dir, s.key+".pid")}
 	if s.inst != nil {
-		inst := *s.inst
-		conf := s.files[m.path(inst.Iface+".conf")]
+		inst, conf := *s.inst, *s.wg
 		sup.OnStart = func(int) { m.setupInterface(inst, conf) }
 	}
 	if err := sup.Start(s.bin, s.args); err != nil {
@@ -199,13 +203,11 @@ func (m *Manager) specs(p *Plan) ([]spec, error) {
 			m.log("warn", "amneziawg node %q skipped: %v", in.Name, err)
 			continue
 		}
-		inst := in
-		conf := m.path(in.Iface + ".conf")
-		out = append(out, spec{key: in.Iface, kind: AmneziaWG, names: []string{in.Name}, bin: p.Bins[AmneziaWG],
-			args: []string{"-f", in.Iface}, files: map[string]string{conf: c.SetConf()}, inst: &inst,
-			// Addresses and MTU are applied by setupInterface: part of the identity.
-		})
-		out[len(out)-1].files[conf+".addr"] = strings.Join(c.Addresses(), ",") + ";" + c.MTU()
+		inst, conf := in, c
+		// The config goes over the control socket, never to disk; the link
+		// is the identity, so a changed config restarts the interface.
+		out = append(out, spec{key: in.Iface, kind: AmneziaWG, names: []string{in.Name}, bin: Resolve(p.Bins[AmneziaWG]),
+			args: []string{"-f", in.Iface}, inst: &inst, wg: &conf, identity: in.Link})
 	}
 	for i := range out {
 		out[i].signature = signature(out[i])
@@ -223,7 +225,7 @@ func names(in []Instance) []string {
 
 func signature(s spec) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00", s.bin, strings.Join(s.args, "\x00"))
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00", s.bin, strings.Join(s.args, "\x00"), s.identity)
 	paths := make([]string, 0, len(s.files))
 	for p := range s.files {
 		paths = append(paths, p)
@@ -235,35 +237,42 @@ func signature(s spec) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// setupInterface configures awgN after amneziawg-go created it: keys and
-// peer, addresses, MTU, and a routing table used only by sockets bound to it.
-func (m *Manager) setupInterface(in Instance, confPath string) {
+// setupInterface configures awgN after amneziawg-go created it: keys, peer
+// and obfuscation over the UAPI socket, then addresses, MTU and a routing
+// table used only by sockets bound to the interface.
+func (m *Manager) setupInterface(in Instance, conf WireGuardConf) {
 	deadline := time.Now().Add(ifaceWait)
-	for !ifaceExists(in.Iface) {
+	for !ifaceExists(in.Iface) || !fileExists(uapiSocket(in.Iface)) {
 		if time.Now().After(deadline) {
 			m.log("error", "%s: interface did not appear", in.Iface)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	awg, ip := FindTool("awg"), FindTool("ip")
-	if awg == "" || ip == "" {
-		m.log("error", "%s: the awg and ip tools are needed (install amneziawg-tools and ip-full)", in.Iface)
+	req, err := conf.UAPI(resolveHost)
+	if err == nil {
+		err = m.uapi(uapiSocket(in.Iface), req)
+	}
+	if err != nil {
+		m.log("error", "%s: %v", in.Iface, err)
 		return
 	}
-	addrMTU, _ := os.ReadFile(confPath + ".addr")
-	addrs, mtu, _ := strings.Cut(string(addrMTU), ";")
+	ip := FindTool("ip")
+	if ip == "" {
+		m.log("error", "%s: the ip tool is needed (ip-full)", in.Iface)
+		return
+	}
 	table := strconv.Itoa(in.Table)
-	steps := [][]string{{awg, "setconf", in.Iface, confPath}}
+	var steps [][]string
 	v6 := false
-	for _, a := range splitList(addrs) {
+	for _, a := range conf.Addresses() {
 		fam := "-4"
 		if strings.Contains(a, ":") {
 			fam, v6 = "-6", true
 		}
 		steps = append(steps, []string{ip, fam, "address", "replace", a, "dev", in.Iface})
 	}
-	if mtu != "" {
+	if mtu := conf.MTU(); mtu != "" {
 		steps = append(steps, []string{ip, "link", "set", "dev", in.Iface, "mtu", mtu})
 	}
 	steps = append(steps,
@@ -285,6 +294,49 @@ func (m *Manager) setupInterface(in Instance, confPath string) {
 		}
 	}
 	m.log("info", "%s is up (%s)", in.Iface, in.Name)
+}
+
+// uapiSocket is where amneziawg-go listens (ipc/uapi_unix.go upstream).
+func uapiSocket(iface string) string { return "/var/run/amneziawg/" + iface + ".sock" }
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// resolveHost prefers an IPv4 address for the endpoint.
+func resolveHost(host string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return "", fmt.Errorf("no address for %s: %v", host, err)
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
+			return a, nil
+		}
+	}
+	return addrs[0], nil
+}
+
+// writeUAPI sends a set request and checks the "errno=0" answer.
+func writeUAPI(socket, req string) error {
+	c, err := net.DialTimeout("unix", socket, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("uapi: %w", err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := c.Write([]byte(req)); err != nil {
+		return fmt.Errorf("uapi: %w", err)
+	}
+	buf := make([]byte, 256)
+	n, _ := c.Read(buf)
+	if ans := strings.TrimSpace(string(buf[:n])); ans != "errno=0" {
+		return fmt.Errorf("uapi: amneziawg-go answered %q", ans)
+	}
+	return nil
 }
 
 func (m *Manager) teardownInterface(in Instance) {

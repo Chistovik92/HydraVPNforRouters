@@ -30,6 +30,10 @@ jobs:
         # hydravpn-router-<openwrt|keeneticos>_<ver>_<arch>.ipk, sizes.md
         run: bash scripts/build.sh "${GITHUB_REF_NAME#v}" dist
 
+      - name: Cores without router builds upstream (amneziawg-go, OpenFlux, olcRTC)
+        # core-<binary>-linux-<arch>: installed by the service on request
+        run: bash scripts/build-cores.sh dist
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -71,4 +75,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" $FLAGS \
             --title "HydraVPN for Router ${GITHUB_REF_NAME#v}" \
             --notes-file dist/RELEASE_NOTES.md \
-            dist/hydravpn-router-* dist/checksums.txt dist/sizes.md scripts/install.rsc
+            dist/hydravpn-router-* dist/core-* dist/checksums.txt dist/sizes.md scripts/install.rsc
