@@ -21,7 +21,7 @@ Changes that need the service to restart parts of itself (reload, subscription o
 |---|---|---|
 | GET | `/api/v1/version` | version and commit |
 | GET | `/api/v1/capabilities` | `api` level, `features` (`rules`, `settings`, `update`, …), section `providers`, `actions`, read-only settings: a client hides what the router does not have |
-| GET | `/api/v1/status` | service, providers, DNS, firewall, subscriptions, lists, component versions |
+| GET | `/api/v1/status` | service, providers, DNS, firewall, subscriptions, lists, component versions (`components.<name>`: `installed`, `latest`, `update_available`, `too_old`, `untested_newer` — the installed one is newer than tested, `latest_untested` — the latest release is newer than tested, `error`, `checked`) |
 | GET | `/api/v1/config` | configuration with masked secrets |
 | POST | `/api/v1/reload` | re-read the config file and apply it |
 | POST | `/api/v1/restart` | stop and start all components (`202`) |
@@ -93,7 +93,7 @@ Sections accept `domains` (inline rules) and `rules[]` accept `domain_regex` and
 3. The new file is started with `version` and must report the expected version, so a build for another CPU is never installed.
 4. It replaces the binary with an atomic rename; the service stops normally (firewall rules removed, sing-box stopped) and re-executes itself with the same PID. The API is unreachable for a few seconds. The web UI waits until `/api/v1/version` reports the new version.
 
-The same check runs by itself a minute after start and then every `component_update_check_interval` (if `component_update_check_enabled`); `GET /api/v1/status` includes the result as `update`. Nothing is installed without a request. Downloads go through the local proxy when `download_components_via_proxy` is set. In a container the update is refused: pull the new image.
+The same check runs by itself a minute after start and then every `component_update_check_interval` (if `component_update_check_enabled`); `GET /api/v1/status` includes the result as `update`. Nothing is installed without a request. Downloads go through the local proxy when `download_components_via_proxy` is set; with `download_components_via_proxy_section` that proxy is routed through the outbound of the section (otherwise it follows the routing rules). In a container the update is refused: pull the new image.
 
 The checksum protects against a damaged download, not against a replaced release: signed releases are planned (ROADMAP 1.3.0).
 
