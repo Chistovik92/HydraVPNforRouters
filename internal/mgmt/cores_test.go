@@ -60,8 +60,8 @@ func TestCoreEndpoints(t *testing.T) {
 	if code, body := call(t, ts, token, "GET", "/api/v1/cores/xray/versions", nil); code != 200 || !strings.Contains(body, "1.15.0-beta.1") {
 		t.Errorf("versions: %d %s", code, body)
 	}
-	if code, _ := call(t, ts, token, "GET", "/api/v1/cores/openflux/versions", nil); code != 404 {
-		t.Errorf("openflux versions: %d", code)
+	if code, _ := call(t, ts, token, "GET", "/api/v1/cores/nope/versions", nil); code != 404 {
+		t.Errorf("unknown core versions: %d", code)
 	}
 	if code, _ := call(t, ts, token, "POST", "/api/v1/cores/sing-box/install", map[string]string{"version": "1.15.0-beta.1"}); code != 202 || len(fi.started) != 1 {
 		t.Errorf("install: %d %v", code, fi.started)
