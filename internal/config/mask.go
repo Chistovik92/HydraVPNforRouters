@@ -10,6 +10,7 @@ const masked = "********"
 func (c *Config) Masked() *Config {
 	out := *c
 	out.Settings.APIToken = maskIf(c.Settings.APIToken)
+	out.Settings.TelegramBotToken = maskIf(c.Settings.TelegramBotToken)
 
 	out.SubscriptionURLs = make([]SubscriptionURL, len(c.SubscriptionURLs))
 	for i, s := range c.SubscriptionURLs {

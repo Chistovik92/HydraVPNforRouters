@@ -7,6 +7,7 @@
 package mgmt
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -16,9 +17,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,6 +58,7 @@ type Options struct {
 	Radar      *radar.Client // the bot client; tests replace it
 	Updater    Updater       // self-update; nil disables /api/v1/update
 	Cores      CoreInstaller // core versions; nil disables installing them
+	SMS        SMSBox        // modem SMS; nil when there is no bot
 }
 
 // Server is the management API.
@@ -62,6 +66,7 @@ type Server struct {
 	opts  Options
 	token string
 	srv   *http.Server
+	mux   http.Handler
 	allow []*net.IPNet
 
 	cfgMu sync.Mutex // serializes read-modify-write of the config file
@@ -73,16 +78,43 @@ type Server struct {
 	waiting map[string]int
 }
 
+// NewInProcess builds the handlers without a listener: Call serves the
+// Telegram bot when the HTTP API is off.
+func NewInProcess(o Options) *Server {
+	if o.Clash == nil {
+		o.Clash = NewClashClient(config.ClashAPIAddress)
+	}
+	srv := &Server{opts: o, fails: map[string][]time.Time{}, waiting: map[string]int{}}
+	mux := http.NewServeMux()
+	srv.routes(mux)
+	srv.mux = mux
+	return srv
+}
+
+// Call runs one API request in process, with the same handlers, checks and
+// config writes as over HTTP; who is the audit label for the journal.
+func (s *Server) Call(ctx context.Context, who, method, path string, body interface{}) (int, []byte) {
+	var rd io.Reader = http.NoBody
+	if body != nil {
+		data, _ := json.Marshal(body)
+		rd = bytes.NewReader(data)
+	}
+	req := httptest.NewRequest(method, path, rd).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if method != http.MethodGet {
+		s.log("info", "%s %s %s -> %d", who, method, path, rec.Code)
+	}
+	return rec.Code, rec.Body.Bytes()
+}
+
 // New builds a Server from the settings. It returns nil if api_listen is empty.
 func New(o Options) (*Server, error) {
 	s := o.Engine.GetConfig().Settings
 	if s.APIListen == "" {
 		return nil, nil
 	}
-	if o.Clash == nil {
-		o.Clash = NewClashClient(config.ClashAPIAddress)
-	}
-	srv := &Server{opts: o, fails: map[string][]time.Time{}, waiting: map[string]int{}}
+	srv := NewInProcess(o)
 	if s.APIToken != "" && len(s.APIToken) < 16 {
 		return nil, fmt.Errorf("api_token must be at least 16 characters (leave it empty to generate one)")
 	}
@@ -111,9 +143,7 @@ func New(o Options) (*Server, error) {
 		srv.allow = append(srv.allow, n)
 	}
 
-	mux := http.NewServeMux()
-	srv.routes(mux)
-	srv.srv = &http.Server{Addr: s.APIListen, Handler: srv.guard(mux), ReadHeaderTimeout: 10 * time.Second}
+	srv.srv = &http.Server{Addr: s.APIListen, Handler: srv.guard(srv.mux), ReadHeaderTimeout: 10 * time.Second}
 	return srv, nil
 }
 
@@ -384,6 +414,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.toolRoutes(mux)
 	s.manageRoutes(mux)
 	s.coreRoutes(mux)
+	s.smsRoutes(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

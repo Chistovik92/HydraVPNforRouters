@@ -405,6 +405,25 @@ exit 0
 EOF
     chmod 0755 "$hook_dir/50-hydravpn-router.sh"
     log_ok "NDM netfilter hook installed: $hook_dir/50-hydravpn-router.sh"
+
+    # New SMS: the firmware passes $interface_id and $message_id; the
+    # service reads the text with ndmc and forwards it (sms_forward).
+    mkdir -p /opt/etc/ndm/sms.d
+    cat > /opt/etc/ndm/sms.d/50-hydravpn-router.sh <<'EOF'
+#!/bin/sh
+# Installed by HydraVPN for Router: queue a new SMS for the service.
+[ -n "$interface_id" ] && [ -n "$message_id" ] || exit 0
+case "$interface_id$message_id" in
+    *[!A-Za-z0-9._-]*) exit 0 ;;
+esac
+dir=/opt/var/run/hydravpn-router/sms
+mkdir -p "$dir" || exit 0
+printf '%s %s
+' "$interface_id" "$message_id" > "$dir/$interface_id-$message_id"
+exit 0
+EOF
+    chmod 0755 /opt/etc/ndm/sms.d/50-hydravpn-router.sh
+    log_ok "NDM SMS hook installed: /opt/etc/ndm/sms.d/50-hydravpn-router.sh"
 }
 
 service_ctl() {

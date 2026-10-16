@@ -77,7 +77,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"sections", "sections.unmask", "subscriptions", "subscriptions.edit",
 		"servers", "servers.edit", "rules", "lists", "settings",
 		"nodes", "logs", "logs.stream", "check", "radar",
-		"domainmap", "genconfig", "keenetic", "cores",
+		"domainmap", "genconfig", "keenetic", "cores", "telegram", "sms",
 	}
 	if s.opts.Cores != nil {
 		features = append(features, "cores.install")
@@ -331,6 +331,9 @@ func patchSettings(st *config.Settings, patch map[string]json.RawMessage) error 
 		}
 		f := v.Field(i)
 		var text string
+		if json.Unmarshal(raw, &text) == nil && config.IsMasked(text) {
+			continue // the masked secret the client got: keep the stored one
+		}
 		if f.Type() == durationType && json.Unmarshal(raw, &text) == nil {
 			d, err := time.ParseDuration(text)
 			if err != nil {

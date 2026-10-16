@@ -35,14 +35,21 @@ func coreNodes(cfg *config.Config, subs singbox.NodeSource) []cores.Node {
 	return out
 }
 
-// CoreInstallDir is where the service keeps core versions it installed.
-func CoreInstallDir() string { return filepath.Join(config.DefaultConfigDir, "cores") }
+// CoresDir is where the service keeps the core versions it installed: next
+// to the config file (/opt/etc/hydravpn-router/cores on Keenetic,
+// /etc/hydravpn-router/cores on OpenWrt).
+func CoresDir(configFile string) string {
+	if configFile == "" {
+		return filepath.Join(config.DefaultConfigDir, "cores")
+	}
+	return filepath.Join(filepath.Dir(configFile), "cores")
+}
 
 // coreBinaries resolves the installed cores: the configured path, the
 // versions the service installed, then the usual locations.
-func coreBinaries(cfg *config.Config) cores.Binaries {
+func coreBinaries(cfg *config.Config, coresDir string) cores.Binaries {
 	s := cfg.Settings
-	dir := filepath.Join(CoreInstallDir(), "bin")
+	dir := filepath.Join(coresDir, "bin")
 	return cores.Binaries{
 		cores.Xray:      cores.FindBinary(cores.Xray, s.XrayBinary, dir),
 		cores.OpenFlux:  cores.FindBinary(cores.OpenFlux, s.OpenFluxBinary, dir),
@@ -55,7 +62,7 @@ func coreBinaries(cfg *config.Config) cores.Binaries {
 // returns the plan the sing-box config is built with. It runs whenever the
 // sing-box config is rendered, so both always agree.
 func (e *Engine) applyCores() *cores.Plan {
-	plan := cores.NewPlan(coreNodes(e.config, e.subscriptionMgr), coreBinaries(e.config))
+	plan := cores.NewPlan(coreNodes(e.config, e.subscriptionMgr), coreBinaries(e.config, e.coresDir))
 	for name, why := range plan.Skipped {
 		e.log("warn", "node "+name+" skipped: "+why)
 	}

@@ -66,6 +66,7 @@ type Engine struct {
 	wan             *wanmon.Monitor
 	comps           *components.Checker
 	cores           *cores.Manager
+	coresDir        string
 
 	// Status tracking
 	startTime   time.Time
@@ -88,6 +89,9 @@ type EngineOptions struct {
 	Config        *config.Config
 	OnStateChange func(EngineState)
 	OnLog         func(level, message string)
+	// CoresDir holds the core versions the service installed (next to the
+	// config file: it must survive a reboot).
+	CoresDir string
 }
 
 // NewEngine creates a new HydraVPN for Router engine
@@ -117,6 +121,10 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	e.listsMgr = lists.NewManager(lists.Options{Config: e.config, OnLog: e.log, OnUpdate: notify})
 	e.dnsRedirect = dnsredirect.New(e.log)
 	e.comps = components.New(e.config, e.log)
+	e.coresDir = opts.CoresDir
+	if e.coresDir == "" {
+		e.coresDir = CoresDir("")
+	}
 	e.cores = cores.NewManager(cores.Options{Dir: filepath.Join(filepath.Dir(config.PidFile(e.config, "x")), "cores"),
 		LogLevel: "warning", OnLog: e.log})
 

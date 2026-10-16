@@ -98,7 +98,8 @@ func (c *StartCmd) Run(g *Globals) error {
 		OnStateChange: func(state core.EngineState) {
 			logLine("info", "State changed: "+string(state))
 		},
-		OnLog: logLine,
+		OnLog:    logLine,
+		CoresDir: core.CoresDir(c.ConfigFile),
 	})
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
@@ -149,13 +150,18 @@ func (c *StartCmd) Run(g *Globals) error {
 
 	// sing-box and Xray versions chosen in the app or web UI.
 	installer := cores.NewInstaller(cores.InstallerOptions{
-		Dir:   core.CoreInstallDir(),
+		Dir:   core.CoresDir(c.ConfigFile),
 		Proxy: downloadProxy(engine),
 		OnLog: logLine,
 	})
 
-	api, err := mgmt.New(mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir,
-		Updater: updater, Cores: installer})
+	// The Telegram bot works through the API handlers, in process, so it
+	// works even when the HTTP API is off.
+	bot, botAPI := newBot(engine, g.RuntimeDir, logLine)
+
+	apiOpts := mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir,
+		Updater: updater, Cores: installer, SMS: bot}
+	api, err := mgmt.New(apiOpts)
 	if err != nil {
 		logLine("error", "management API disabled: "+err.Error())
 	} else if api != nil {
@@ -165,6 +171,11 @@ func (c *StartCmd) Run(g *Globals) error {
 			defer api.Stop()
 		}
 	}
+	if api == nil {
+		api = mgmt.NewInProcess(apiOpts)
+	}
+	botAPI.set(api)
+	go bot.Run(ctx)
 
 	for {
 		var sig os.Signal

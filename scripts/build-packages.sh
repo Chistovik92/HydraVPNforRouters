@@ -79,6 +79,7 @@ build_ipk() {
             conf="/opt/etc/hydravpn-router/config.yaml"
             initd="$pkg/data/opt/etc/init.d/S99hydravpn-router"
             chmod 0755 "$pkg/data/opt/etc/ndm/netfilter.d/50-hydravpn-router.sh"
+            chmod 0755 "$pkg/data/opt/etc/ndm/sms.d/50-hydravpn-router.sh"
             ;;
     esac
     chmod 0755 "$initd" "$pkg/control/postinst" "$pkg/control/prerm"

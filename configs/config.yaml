@@ -48,6 +48,13 @@ settings:
   latency_test_url: "https://www.gstatic.com/generate_204"
   download_lists_via_proxy: false
   download_components_via_proxy: false
+
+  # Telegram bot and SMS from the router's modem (docs/TELEGRAM.md)
+  # telegram_bot_token: ""
+  # telegram_chat_ids: []
+  # telegram_via_proxy: true
+  # sms_forward: true
+  # sms_delete_forwarded: false
   # download_lists_via_proxy_section: "main"
   # download_components_via_proxy_section: "main"
   

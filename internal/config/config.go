@@ -142,13 +142,21 @@ type Settings struct {
 	LogKeep      int    `yaml:"log_keep" json:"log_keep"`
 	EnableIPv6   bool   `yaml:"enable_ipv6" json:"enable_ipv6"`
 	// Management API (see docs/API.md). Empty api_listen disables it.
-	APIListen         string   `yaml:"api_listen" json:"api_listen"`
-	APIToken          string   `yaml:"api_token" json:"api_token"`
-	APIAllow          []string `yaml:"api_allow" json:"api_allow"`
-	APITLSCert        string   `yaml:"api_tls_cert" json:"api_tls_cert"`
-	APITLSKey         string   `yaml:"api_tls_key" json:"api_tls_key"`
-	ExcludeNTP        bool     `yaml:"exclude_ntp" json:"exclude_ntp"`
-	ShutdownCorrectly bool     `yaml:"shutdown_correctly" json:"shutdown_correctly"`
+	APIListen  string   `yaml:"api_listen" json:"api_listen"`
+	APIToken   string   `yaml:"api_token" json:"api_token"`
+	APIAllow   []string `yaml:"api_allow" json:"api_allow"`
+	APITLSCert string   `yaml:"api_tls_cert" json:"api_tls_cert"`
+	APITLSKey  string   `yaml:"api_tls_key" json:"api_tls_key"`
+	ExcludeNTP bool     `yaml:"exclude_ntp" json:"exclude_ntp"`
+	// Telegram bot: manage the router and receive SMS (see docs/TELEGRAM.md).
+	TelegramBotToken string  `yaml:"telegram_bot_token" json:"telegram_bot_token"`
+	TelegramChatIDs  []int64 `yaml:"telegram_chat_ids" json:"telegram_chat_ids"`
+	// Reach api.telegram.org through the local proxy (routed by sections).
+	TelegramViaProxy bool `yaml:"telegram_via_proxy" json:"telegram_via_proxy"`
+	// Forward SMS from the router's modem to the chats; delete them after.
+	SMSForward         bool `yaml:"sms_forward" json:"sms_forward"`
+	SMSDeleteForwarded bool `yaml:"sms_delete_forwarded" json:"sms_delete_forwarded"`
+	ShutdownCorrectly  bool `yaml:"shutdown_correctly" json:"shutdown_correctly"`
 }
 
 // Section represents a configuration section (subscription, json_outbound, etc.)
