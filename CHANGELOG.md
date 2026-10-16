@@ -1,8 +1,30 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
 
-Checks of the component (core) versions.
+Full management from the Hydra app, the cores of the Hydra app on the router, a choice of core versions, a Telegram bot and SMS from the modem.
+
+### Management from the app (and the bot)
+
+- **`GET /api/v1/capabilities`** (api level 3): features, providers, read-only settings — the app hides what an older router lacks.
+- **Routing:** `rules` (GET/POST, PUT/DELETE `{index}`), community `lists` (GET/POST, PUT/DELETE `{name}`; a list used by a section cannot be deleted); a rule must point at an existing section.
+- **Settings:** `GET /api/v1/settings` (durations as `"24h0m0s"`, secrets masked), `PATCH`/`POST /api/v1/settings` changes only the given keys; `api_*`, file paths and bookkeeping keys are read-only there.
+- **Edits keep secrets:** PUT `sections/{name}`, `servers/{name}` (new) and `subscriptions/{index}` (new) restore the masked values (`********`) from the stored config, so editing what the API returned no longer wipes keys.
+- Subscription URLs no longer appear in validation errors (they reached the API reply and the journal).
+
+### Cores of the Hydra app
+
+- Nodes that sing-box cannot run now work instead of being dropped: **Xray** (xhttp, post-quantum VLESS; one process, a SOCKS inbound per node), **OpenFlux** (`openflux://`, official v1 and the app's legacy form), **olcRTC** (`olcrtc://`), **AmneziaWG / WireGuard** (`awg://`, `wireguard://`, `vpn://`, `.conf`; `amneziawg-go` configured over its UAPI socket — no awg tool, no key files — with its own routing table and a DNS server queried through the tunnel). Link formats and configs follow the Hydra app. Limits protect router memory; a missing core skips its nodes with a warning; `status.cores` lists them.
+- **Choose the version:** `GET /api/v1/cores`, `GET /api/v1/cores/{name}/versions` (betas included), `POST /api/v1/cores/{name}/install` (`x.y.z`, `latest`, `beta`) and `hydravpn-router core list|versions|install`. sing-box and Xray come from their releases (SHA-256 from the release, the binary must run and report the version; Xray on MIPS takes `xray_softfloat`); amneziawg-go, OpenFlux and olcRTC are built for every router CPU by the release workflow (`core-<binary>-linux-<arch>`). The previous version stays for a rollback without network; switching restarts the core.
+- `install.sh` installs the latest sing-box from its release when the package is missing or older than 1.14 (`SINGBOX_VERSION`, `XRAY_VERSION` choose).
+- Tested versions: sing-box 1.14.3, Xray-core 26.10.10, OpenFlux 0.13.0, amneziawg-go 3.1.20260828.
+
+### Telegram bot and SMS
+
+- A bot (`telegram_bot_token`, `telegram_chat_ids`) that manages the router with the same handlers as the API (status, nodes, subscriptions, update, cores, settings via `/set`, reload/restart, logs, checks) — only for the listed chats; works with the HTTP API off. See [docs/TELEGRAM.md](docs/TELEGRAM.md).
+- SMS from the router's modem (KeeneticOS `ndm/sms.d` hook, ModemManager, smstools3) go to the chats (`sms_forward`, `sms_delete_forwarded`); `GET/POST /api/v1/sms`, `/sms`, `/sendsms`. Not verified on hardware.
+
+### Checks of the component (core) versions
 
 - **sing-box version check on Keenetic.** The check of the latest sing-box release used Go's default CA store, which KeeneticOS does not have, so it always failed with a certificate error; it now uses Entware's CA bundle, like the self-updater.
 - **Pre-release versions.** `sing-box version 1.13.0-beta.5` is read with its suffix and compared as older than `1.13.0` (it used to count as equal, so the release was never offered). The status of a component (`GET /api/v1/status` → `components`) has a new `latest_untested`: the latest release is a major.minor newer than the tested one, and the log line about the update says so.
