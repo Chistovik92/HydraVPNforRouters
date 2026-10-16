@@ -2,6 +2,7 @@ package mgmt
 
 import (
 	"reflect"
+	"strings"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 )
@@ -14,6 +15,24 @@ func diffConfig(before, after *config.Config) []config.Edit {
 	edits = append(edits, diffList("sections", before.Sections, after.Sections, func(s config.Section) string { return s.Name })...)
 	edits = append(edits, diffList("subscription_urls", before.SubscriptionURLs, after.SubscriptionURLs, nil)...)
 	edits = append(edits, diffList("servers", before.Servers, after.Servers, func(s config.Server) string { return s.Name })...)
+	edits = append(edits, diffList("rules", before.Rules, after.Rules, nil)...)
+	edits = append(edits, diffList("community_lists", before.CommunityLists, after.CommunityLists, nil)...)
+	edits = append(edits, diffSettings(before.Settings, after.Settings)...)
+	return edits
+}
+
+// diffSettings sets each changed key of settings on its own, so the rest of
+// the hand-written block stays as it is.
+func diffSettings(before, after config.Settings) []config.Edit {
+	var edits []config.Edit
+	b, a := reflect.ValueOf(before), reflect.ValueOf(after)
+	for i := 0; i < b.NumField(); i++ {
+		if reflect.DeepEqual(b.Field(i).Interface(), a.Field(i).Interface()) {
+			continue
+		}
+		key, _, _ := strings.Cut(b.Type().Field(i).Tag.Get("yaml"), ",")
+		edits = append(edits, config.Edit{Key: "settings", Op: config.OpSet, Name: key, Value: a.Field(i).Interface()})
+	}
 	return edits
 }
 

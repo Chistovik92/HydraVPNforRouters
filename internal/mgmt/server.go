@@ -381,6 +381,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	s.updateRoutes(mux)
 	s.toolRoutes(mux)
+	s.manageRoutes(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
@@ -501,10 +502,8 @@ func (s *Server) handleSectionsAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mutate(func(c *config.Config) error {
-		for _, e := range c.Sections {
-			if e.Name == sec.Name {
-				return errors.New("section already exists")
-			}
+		if indexOf(c.Sections, sec.Name, sectionName) >= 0 {
+			return errors.New("section already exists")
 		}
 		c.Sections = append(c.Sections, sec)
 		return nil
@@ -521,13 +520,12 @@ func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
 	}
 	sec.Name = name
 	err := s.mutate(func(c *config.Config) error {
-		for i, e := range c.Sections {
-			if e.Name == name {
-				c.Sections[i] = sec
-				return nil
-			}
+		i := indexOf(c.Sections, name, sectionName)
+		if i < 0 {
+			return errors.New("no such section")
 		}
-		return errors.New("no such section")
+		c.Sections[i] = config.UnmaskSection(sec, c.Sections[i])
+		return nil
 	})
 	s.done(w, err, 200, "updated")
 }
@@ -535,13 +533,17 @@ func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSectionsDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.mutate(func(c *config.Config) error {
-		for i, e := range c.Sections {
-			if e.Name == name {
-				c.Sections = append(c.Sections[:i], c.Sections[i+1:]...)
-				return nil
+		i := indexOf(c.Sections, name, sectionName)
+		if i < 0 {
+			return errors.New("no such section")
+		}
+		for _, sub := range c.SubscriptionURLs {
+			if sub.Section == name {
+				return errors.New("section is used by a subscription")
 			}
 		}
-		return errors.New("no such section")
+		c.Sections = removeAt(c.Sections, i)
+		return nil
 	})
 	s.done(w, err, 200, "deleted")
 }
@@ -610,11 +612,7 @@ func (s *Server) handleSubsAdd(w http.ResponseWriter, r *http.Request) {
 		sub.SubscriptionUpdateInterval = 24 * time.Hour
 	}
 	err := s.mutate(func(c *config.Config) error {
-		found := false
-		for _, sec := range c.Sections {
-			found = found || sec.Name == sub.Section
-		}
-		if !found {
+		if indexOf(c.Sections, sub.Section, sectionName) < 0 {
 			return fmt.Errorf("unknown section %q", sub.Section)
 		}
 		for _, existing := range c.SubscriptionURLs {
@@ -638,7 +636,7 @@ func (s *Server) handleSubsDelete(w http.ResponseWriter, r *http.Request) {
 		if idx < 0 || idx >= len(c.SubscriptionURLs) {
 			return errors.New("no such subscription")
 		}
-		c.SubscriptionURLs = append(c.SubscriptionURLs[:idx], c.SubscriptionURLs[idx+1:]...)
+		c.SubscriptionURLs = removeAt(c.SubscriptionURLs, idx)
 		return nil
 	})
 	s.done(w, err, 200, "deleted")
@@ -676,10 +674,8 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mutate(func(c *config.Config) error {
-		for _, e := range c.Servers {
-			if e.Name == srv.Name {
-				return errors.New("server already exists")
-			}
+		if indexOf(c.Servers, srv.Name, serverName) >= 0 {
+			return errors.New("server already exists")
 		}
 		c.Servers = append(c.Servers, srv)
 		return nil
@@ -690,13 +686,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServersDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.mutate(func(c *config.Config) error {
-		for i, e := range c.Servers {
-			if e.Name == name {
-				c.Servers = append(c.Servers[:i], c.Servers[i+1:]...)
-				return nil
-			}
+		i := indexOf(c.Servers, name, serverName)
+		if i < 0 {
+			return errors.New("no such server")
 		}
-		return errors.New("no such server")
+		c.Servers = removeAt(c.Servers, i)
+		return nil
 	})
 	s.done(w, err, 200, "deleted")
 }

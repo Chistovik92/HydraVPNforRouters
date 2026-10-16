@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,11 @@ const (
 	// ClashAPIAddress is the local sing-box Clash API (node status, tests).
 	ClashAPIAddress = "127.0.0.1:9090"
 )
+
+// KnownProviders lists the provider values a section may use.
+func KnownProviders() []ProviderType {
+	return []ProviderType{ProviderTypeSingBox, ProviderTypeZapret, ProviderTypeZapret2, ProviderTypeByeDPI, ProviderTypeAuto}
+}
 
 // ActionType represents what action a section performs
 type ActionType string
@@ -453,9 +459,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate section %q", sec.Name)
 		}
 		names[sec.Name] = true
-		switch sec.Provider {
-		case "", ProviderTypeSingBox, ProviderTypeZapret, ProviderTypeZapret2, ProviderTypeByeDPI, ProviderTypeAuto:
-		default:
+		if sec.Provider != "" && !slices.Contains(KnownProviders(), sec.Provider) {
 			return fmt.Errorf("section %q: unknown provider %q", sec.Name, sec.Provider)
 		}
 		switch sec.Action {
@@ -469,10 +473,15 @@ func (c *Config) Validate() error {
 			continue
 		}
 		if !names[sub.Section] {
-			return fmt.Errorf("subscription %q refers to unknown section %q", sub.URL, sub.Section)
+			return fmt.Errorf("subscription %q refers to unknown section %q", MaskURL(sub.URL), sub.Section)
 		}
 		if u, err := url.Parse(sub.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("subscription url %q must be a valid http(s) URL", sub.URL)
+			return fmt.Errorf("subscription url %q must be a valid http(s) URL", MaskURL(sub.URL))
+		}
+	}
+	for i, r := range c.Rules {
+		if r.Section != "" && !names[r.Section] {
+			return fmt.Errorf("rule %d refers to unknown section %q", i, r.Section)
 		}
 	}
 	return nil
