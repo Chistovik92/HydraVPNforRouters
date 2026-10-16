@@ -89,6 +89,8 @@ type DNSServer struct {
 	DomainResolver string `json:"domain_resolver,omitempty"`
 	Inet4Range     string `json:"inet4_range,omitempty"`
 	Inet6Range     string `json:"inet6_range,omitempty"`
+	// Detour sends the queries through an outbound (a tunnel's own DNS).
+	Detour string `json:"detour,omitempty"`
 }
 
 // DNSRule represents a DNS rule

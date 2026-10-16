@@ -8,7 +8,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-#   sh install.sh --yes --version 1.2.5
+#   sh install.sh --yes --version 1.3.0
 #
 # Release files are named after the OS: hydravpn-router-<ver>-openwrt-<arch>
 # (OpenWrt), -keeneticos-<arch> (KeeneticOS, Entware). MikroTik RouterOS has
@@ -405,6 +405,25 @@ exit 0
 EOF
     chmod 0755 "$hook_dir/50-hydravpn-router.sh"
     log_ok "NDM netfilter hook installed: $hook_dir/50-hydravpn-router.sh"
+
+    # New SMS: the firmware passes $interface_id and $message_id; the
+    # service reads the text with ndmc and forwards it (sms_forward).
+    mkdir -p /opt/etc/ndm/sms.d
+    cat > /opt/etc/ndm/sms.d/50-hydravpn-router.sh <<'EOF'
+#!/bin/sh
+# Installed by HydraVPN for Router: queue a new SMS for the service.
+[ -n "$interface_id" ] && [ -n "$message_id" ] || exit 0
+case "$interface_id$message_id" in
+    *[!A-Za-z0-9._-]*) exit 0 ;;
+esac
+dir=/opt/var/run/hydravpn-router/sms
+mkdir -p "$dir" || exit 0
+printf '%s %s
+' "$interface_id" "$message_id" > "$dir/$interface_id-$message_id"
+exit 0
+EOF
+    chmod 0755 /opt/etc/ndm/sms.d/50-hydravpn-router.sh
+    log_ok "NDM SMS hook installed: /opt/etc/ndm/sms.d/50-hydravpn-router.sh"
 }
 
 service_ctl() {
@@ -452,6 +471,28 @@ install_dependencies() {
     esac
 }
 
+# install_cores - sing-box from its GitHub release, built for this router,
+# when the package is missing or older than the version the configs are
+# tested with (packages are often behind). SINGBOX_VERSION=beta or x.y.z
+# chooses another version; XRAY_VERSION=latest|beta|x.y.z installs Xray too.
+# Later: web UI, the Hydra app or "hydravpn-router core install".
+SINGBOX_MIN=1.14.0
+install_cores() {
+    [ -n "$BIN" ] && [ -x "$BIN" ] || return 0
+    conf="$CONFIG_DIR/config.yaml"
+    have=$(sing-box version 2>/dev/null | head -n 1 | awk '{print $3}')
+    if [ -z "${SINGBOX_VERSION:-}" ] && [ -n "$have" ] && ! version_gt "$SINGBOX_MIN" "$have"; then
+        log_ok "sing-box $have"
+    elif "$BIN" core install sing-box "${SINGBOX_VERSION:-latest}" -c "$conf"; then
+        log_ok "sing-box ${SINGBOX_VERSION:-latest} installed from its release"
+    else
+        log_warn "Could not install sing-box from its release; the package version stays (${have:-none})"
+    fi
+    if [ -n "${XRAY_VERSION:-}" ]; then
+        "$BIN" core install xray "$XRAY_VERSION" -c "$conf" || log_warn "Could not install Xray $XRAY_VERSION"
+    fi
+}
+
 do_install_binary() {
     download_binary
     was_running=0
@@ -466,6 +507,7 @@ do_install_binary() {
 
     install_dependencies
     write_default_config
+    install_cores
     install_service
 
     if [ "$was_running" = "1" ] || [ "$UPDATE" = "0" ]; then

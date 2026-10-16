@@ -15,7 +15,9 @@ ANY_RELEASE_REPOS="XTLS/Xray-core"
 # tag REPO PATH JQ: the tag_name of a release from the GitHub API.
 tag() {
     if command -v gh >/dev/null 2>&1; then
-        gh api "repos/$1/$2" --jq "$3" 2>/dev/null
+        # On an error gh prints the error body to stdout: drop it.
+        out=$(gh api "repos/$1/$2" --jq "$3" 2>/dev/null) || out=""
+        echo "$out"
     else
         curl -fsSL "https://api.github.com/repos/$1/$2" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
     fi
@@ -23,9 +25,12 @@ tag() {
 
 latest() {
     case " $ANY_RELEASE_REPOS " in
-    *" $1 "*) tag "$1" "releases?per_page=1" '.[0].tag_name' ;;
-    *) tag "$1" releases/latest .tag_name ;;
+    *" $1 "*) t=$(tag "$1" "releases?per_page=1" '.[0].tag_name') ;;
+    *) t=$(tag "$1" releases/latest .tag_name) ;;
     esac
+    # Projects that only tag (amneziawg-go): the newest tag.
+    [ -n "$t" ] || t=$(tag "$1" "tags?per_page=1" '.[0].name')
+    echo "$t"
 }
 
 # newer A B: true when version A sorts after B.

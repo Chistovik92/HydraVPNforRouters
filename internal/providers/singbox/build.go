@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
+	"github.com/Chistovik92/hydravpn-router/internal/cores"
 	"github.com/Chistovik92/hydravpn-router/internal/lists"
 	"github.com/Chistovik92/hydravpn-router/internal/subscription"
 )
@@ -62,7 +63,10 @@ type RuleSource interface {
 	ListRules(url string) (lists.Entries, bool)
 }
 
-type options struct{ lists ListSource }
+type options struct {
+	lists ListSource
+	cores *cores.Plan
+}
 
 // Option customizes ConfigFromSettings.
 type Option func(*options)
@@ -70,10 +74,15 @@ type Option func(*options)
 // WithLists supplies downloaded .lst lists.
 func WithLists(l ListSource) Option { return func(o *options) { o.lists = l } }
 
+// WithCores supplies the endpoints of nodes run by Xray, OpenFlux, olcRTC
+// and AmneziaWG; without it such nodes are skipped.
+func WithCores(p *cores.Plan) Option { return func(o *options) { o.cores = p } }
+
 type builder struct {
 	cfg   *config.Config
 	nodes NodeSource
 	lists ListSource
+	cores *cores.Plan
 	c     *Config
 
 	used     map[string]bool   // outbound tags in use
@@ -88,6 +97,7 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 		cfg:      cfg,
 		nodes:    nodes,
 		lists:    o.lists,
+		cores:    o.cores,
 		used:     map[string]bool{directTag: true},
 		suffix:   map[string]int{},
 		groups:   map[string]string{},
@@ -95,7 +105,9 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 		detours:  map[string]string{},
 	}
 	b.c = &Config{
-		BinaryPath: cfg.Settings.SingBoxBinary,
+		// The real file, so switching the installed version behind the
+		// same link restarts sing-box instead of reloading the old one.
+		BinaryPath: cores.Resolve(cfg.Settings.SingBoxBinary),
 		ConfigPath: cfg.Settings.ConfigPath,
 		PidFile:    config.PidFile(cfg, "singbox"),
 		LogLevel:   cfg.Settings.LogLevel,
@@ -614,7 +626,7 @@ func (b *builder) proxyGroup(sec config.Section) string {
 	}
 	var nodes []node
 	for _, info := range infos {
-		ob, err := buildOutbound(info)
+		ob, err := b.nodeOutbound(info)
 		if err != nil {
 			b.warn("section %q: node %q skipped: %v", sec.Name, nodeName(info), err)
 			continue
@@ -623,6 +635,9 @@ func (b *builder) proxyGroup(sec config.Section) string {
 		ob["tag"] = tag
 		if sec.OutboundDetourEnabled && sec.OutboundDetourSection != "" && sec.OutboundDetourSection != sec.Name {
 			b.detours[tag] = sec.OutboundDetourSection
+		}
+		if info.Core == string(cores.AmneziaWG) {
+			b.tunnelDNS(ob, info.Link)
 		}
 		b.c.Outbounds = append(b.c.Outbounds, ob)
 		nodes = append(nodes, node{tag: tag, name: nodeName(info)})
@@ -819,6 +834,29 @@ func nodeName(info subscription.OutboundInfo) string {
 		return info.Type + "-" + info.Server + ":" + strconv.Itoa(info.Port)
 	}
 	return info.Type
+}
+
+// nodeOutbound builds the outbound of a node; nodes run by a core reach it
+// through the endpoint the plan gave them.
+func (b *builder) nodeOutbound(info subscription.OutboundInfo) (Outbound, error) {
+	if info.Core == "" {
+		return buildOutbound(info)
+	}
+	if b.cores == nil {
+		return nil, fmt.Errorf("%s nodes need the core manager", info.Core)
+	}
+	ob, err := b.cores.Outbound(info.Link)
+	return Outbound(ob), err
+}
+
+// tunnelDNS gives a tunnel outbound its own resolver that queries through
+// the tunnel, so names of its traffic are not resolved past it (as
+// awg-manager does).
+func (b *builder) tunnelDNS(ob Outbound, link string) {
+	tag, _ := ob["tag"].(string)
+	server := cores.WireGuardResolver(link)
+	b.c.DNS.Servers = append(b.c.DNS.Servers, DNSServer{Type: "udp", Tag: "dns-" + tag, Server: server, Detour: tag})
+	ob["domain_resolver"] = map[string]interface{}{"server": "dns-" + tag}
 }
 
 // buildOutbound converts a parsed subscription node to a sing-box outbound.

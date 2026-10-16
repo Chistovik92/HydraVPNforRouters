@@ -7,6 +7,7 @@
 package mgmt
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -16,9 +17,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,6 +57,8 @@ type Options struct {
 	Clash      *ClashClient
 	Radar      *radar.Client // the bot client; tests replace it
 	Updater    Updater       // self-update; nil disables /api/v1/update
+	Cores      CoreInstaller // core versions; nil disables installing them
+	SMS        SMSBox        // modem SMS; nil when there is no bot
 }
 
 // Server is the management API.
@@ -61,6 +66,7 @@ type Server struct {
 	opts  Options
 	token string
 	srv   *http.Server
+	mux   http.Handler
 	allow []*net.IPNet
 
 	cfgMu sync.Mutex // serializes read-modify-write of the config file
@@ -72,16 +78,51 @@ type Server struct {
 	waiting map[string]int
 }
 
+// NewInProcess builds the handlers without a listener: Call serves the
+// Telegram bot when the HTTP API is off.
+func NewInProcess(o Options) *Server {
+	if o.Clash == nil {
+		o.Clash = NewClashClient(config.ClashAPIAddress)
+	}
+	srv := &Server{opts: o, fails: map[string][]time.Time{}, waiting: map[string]int{}}
+	mux := http.NewServeMux()
+	srv.routes(mux)
+	srv.mux = mux
+	return srv
+}
+
+// Call runs one API request in process, with the same handlers, checks and
+// config writes as over HTTP; who is the audit label for the journal.
+func (s *Server) Call(ctx context.Context, who, method, path string, body interface{}) (code int, out []byte) {
+	// Over HTTP net/http recovers a handler panic; here nothing would, and
+	// the caller (the bot) runs inside the service process.
+	defer func() {
+		if r := recover(); r != nil {
+			s.log("error", "%s %s %s: panic: %v", who, method, path, r)
+			code, out = http.StatusInternalServerError, []byte(`{"error":"internal error"}`)
+		}
+	}()
+	var rd io.Reader = http.NoBody
+	if body != nil {
+		data, _ := json.Marshal(body)
+		rd = bytes.NewReader(data)
+	}
+	req := httptest.NewRequest(method, path, rd).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if method != http.MethodGet {
+		s.log("info", "%s %s %s -> %d", who, method, path, rec.Code)
+	}
+	return rec.Code, rec.Body.Bytes()
+}
+
 // New builds a Server from the settings. It returns nil if api_listen is empty.
 func New(o Options) (*Server, error) {
 	s := o.Engine.GetConfig().Settings
 	if s.APIListen == "" {
 		return nil, nil
 	}
-	if o.Clash == nil {
-		o.Clash = NewClashClient(config.ClashAPIAddress)
-	}
-	srv := &Server{opts: o, fails: map[string][]time.Time{}, waiting: map[string]int{}}
+	srv := NewInProcess(o)
 	if s.APIToken != "" && len(s.APIToken) < 16 {
 		return nil, fmt.Errorf("api_token must be at least 16 characters (leave it empty to generate one)")
 	}
@@ -110,9 +151,7 @@ func New(o Options) (*Server, error) {
 		srv.allow = append(srv.allow, n)
 	}
 
-	mux := http.NewServeMux()
-	srv.routes(mux)
-	srv.srv = &http.Server{Addr: s.APIListen, Handler: srv.guard(mux), ReadHeaderTimeout: 10 * time.Second}
+	srv.srv = &http.Server{Addr: s.APIListen, Handler: srv.guard(srv.mux), ReadHeaderTimeout: 10 * time.Second}
 	return srv, nil
 }
 
@@ -381,6 +420,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	s.updateRoutes(mux)
 	s.toolRoutes(mux)
+	s.manageRoutes(mux)
+	s.coreRoutes(mux)
+	s.smsRoutes(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
@@ -501,10 +543,8 @@ func (s *Server) handleSectionsAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mutate(func(c *config.Config) error {
-		for _, e := range c.Sections {
-			if e.Name == sec.Name {
-				return errors.New("section already exists")
-			}
+		if indexOf(c.Sections, sec.Name, sectionName) >= 0 {
+			return errors.New("section already exists")
 		}
 		c.Sections = append(c.Sections, sec)
 		return nil
@@ -521,13 +561,16 @@ func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
 	}
 	sec.Name = name
 	err := s.mutate(func(c *config.Config) error {
-		for i, e := range c.Sections {
-			if e.Name == name {
-				c.Sections[i] = sec
-				return nil
-			}
+		i := indexOf(c.Sections, name, sectionName)
+		if i < 0 {
+			return errors.New("no such section")
 		}
-		return errors.New("no such section")
+		unmasked, err := config.UnmaskSection(sec, c.Sections[i])
+		if err != nil {
+			return err
+		}
+		c.Sections[i] = unmasked
+		return nil
 	})
 	s.done(w, err, 200, "updated")
 }
@@ -535,13 +578,17 @@ func (s *Server) handleSectionsReplace(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSectionsDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.mutate(func(c *config.Config) error {
-		for i, e := range c.Sections {
-			if e.Name == name {
-				c.Sections = append(c.Sections[:i], c.Sections[i+1:]...)
-				return nil
+		i := indexOf(c.Sections, name, sectionName)
+		if i < 0 {
+			return errors.New("no such section")
+		}
+		for _, sub := range c.SubscriptionURLs {
+			if sub.Section == name {
+				return errors.New("section is used by a subscription")
 			}
 		}
-		return errors.New("no such section")
+		c.Sections = removeAt(c.Sections, i)
+		return nil
 	})
 	s.done(w, err, 200, "deleted")
 }
@@ -610,11 +657,7 @@ func (s *Server) handleSubsAdd(w http.ResponseWriter, r *http.Request) {
 		sub.SubscriptionUpdateInterval = 24 * time.Hour
 	}
 	err := s.mutate(func(c *config.Config) error {
-		found := false
-		for _, sec := range c.Sections {
-			found = found || sec.Name == sub.Section
-		}
-		if !found {
+		if indexOf(c.Sections, sub.Section, sectionName) < 0 {
 			return fmt.Errorf("unknown section %q", sub.Section)
 		}
 		for _, existing := range c.SubscriptionURLs {
@@ -638,7 +681,7 @@ func (s *Server) handleSubsDelete(w http.ResponseWriter, r *http.Request) {
 		if idx < 0 || idx >= len(c.SubscriptionURLs) {
 			return errors.New("no such subscription")
 		}
-		c.SubscriptionURLs = append(c.SubscriptionURLs[:idx], c.SubscriptionURLs[idx+1:]...)
+		c.SubscriptionURLs = removeAt(c.SubscriptionURLs, idx)
 		return nil
 	})
 	s.done(w, err, 200, "deleted")
@@ -676,10 +719,8 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mutate(func(c *config.Config) error {
-		for _, e := range c.Servers {
-			if e.Name == srv.Name {
-				return errors.New("server already exists")
-			}
+		if indexOf(c.Servers, srv.Name, serverName) >= 0 {
+			return errors.New("server already exists")
 		}
 		c.Servers = append(c.Servers, srv)
 		return nil
@@ -690,13 +731,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServersDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.mutate(func(c *config.Config) error {
-		for i, e := range c.Servers {
-			if e.Name == name {
-				c.Servers = append(c.Servers[:i], c.Servers[i+1:]...)
-				return nil
-			}
+		i := indexOf(c.Servers, name, serverName)
+		if i < 0 {
+			return errors.New("no such server")
 		}
-		return errors.New("no such server")
+		c.Servers = removeAt(c.Servers, i)
+		return nil
 	})
 	s.done(w, err, 200, "deleted")
 }

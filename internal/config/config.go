@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,11 @@ const (
 	// ClashAPIAddress is the local sing-box Clash API (node status, tests).
 	ClashAPIAddress = "127.0.0.1:9090"
 )
+
+// KnownProviders lists the provider values a section may use.
+func KnownProviders() []ProviderType {
+	return []ProviderType{ProviderTypeSingBox, ProviderTypeZapret, ProviderTypeZapret2, ProviderTypeByeDPI, ProviderTypeAuto}
+}
 
 // ActionType represents what action a section performs
 type ActionType string
@@ -87,20 +93,27 @@ type Config struct {
 
 // Settings represents global settings
 type Settings struct {
-	ConfigVersion                     string        `yaml:"config_version" json:"config_version"`
-	AppliedMigrations                 []string      `yaml:"applied_migrations" json:"applied_migrations"`
-	DNSType                           string        `yaml:"dns_type" json:"dns_type"`
-	DNSServers                        []string      `yaml:"dns_server" json:"dns_server"`
-	BootstrapDNSServers               []string      `yaml:"bootstrap_dns_server" json:"bootstrap_dns_server"`
-	DNSCheckInterval                  time.Duration `yaml:"dns_check_interval" json:"dns_check_interval"`
-	DNSRecoveryCheckInterval          time.Duration `yaml:"dns_recovery_check_interval" json:"dns_recovery_check_interval"`
-	DNSCheckTimeout                   time.Duration `yaml:"dns_check_timeout" json:"dns_check_timeout"`
-	DNSRewriteTTL                     int           `yaml:"dns_rewrite_ttl" json:"dns_rewrite_ttl"`
-	DNSStrategy                       DNSStrategy   `yaml:"dns_strategy" json:"dns_strategy"`
-	DNSDetourEnabled                  bool          `yaml:"dns_detour_enabled" json:"dns_detour_enabled"`
-	DNSDetourSection                  string        `yaml:"dns_detour_section" json:"dns_detour_section"`
-	FakeIPEnabled                     bool          `yaml:"fakeip_enabled" json:"fakeip_enabled"`
-	SingBoxBinary                     string        `yaml:"singbox_binary" json:"singbox_binary"`
+	ConfigVersion            string        `yaml:"config_version" json:"config_version"`
+	AppliedMigrations        []string      `yaml:"applied_migrations" json:"applied_migrations"`
+	DNSType                  string        `yaml:"dns_type" json:"dns_type"`
+	DNSServers               []string      `yaml:"dns_server" json:"dns_server"`
+	BootstrapDNSServers      []string      `yaml:"bootstrap_dns_server" json:"bootstrap_dns_server"`
+	DNSCheckInterval         time.Duration `yaml:"dns_check_interval" json:"dns_check_interval"`
+	DNSRecoveryCheckInterval time.Duration `yaml:"dns_recovery_check_interval" json:"dns_recovery_check_interval"`
+	DNSCheckTimeout          time.Duration `yaml:"dns_check_timeout" json:"dns_check_timeout"`
+	DNSRewriteTTL            int           `yaml:"dns_rewrite_ttl" json:"dns_rewrite_ttl"`
+	DNSStrategy              DNSStrategy   `yaml:"dns_strategy" json:"dns_strategy"`
+	DNSDetourEnabled         bool          `yaml:"dns_detour_enabled" json:"dns_detour_enabled"`
+	DNSDetourSection         string        `yaml:"dns_detour_section" json:"dns_detour_section"`
+	FakeIPEnabled            bool          `yaml:"fakeip_enabled" json:"fakeip_enabled"`
+	SingBoxBinary            string        `yaml:"singbox_binary" json:"singbox_binary"`
+	// Cores for nodes sing-box cannot run (empty: looked up in PATH,
+	// /opt/sbin, /opt/bin, /usr/bin, ... and the versions the service
+	// installed itself).
+	XrayBinary                        string        `yaml:"xray_binary" json:"xray_binary"`
+	OpenFluxBinary                    string        `yaml:"openflux_binary" json:"openflux_binary"`
+	OlcRTCBinary                      string        `yaml:"olcrtc_binary" json:"olcrtc_binary"`
+	AmneziaWGBinary                   string        `yaml:"amneziawg_binary" json:"amneziawg_binary"`
 	SourceNetworkInterfaces           []string      `yaml:"source_network_interfaces" json:"source_network_interfaces"`
 	EnableOutputNetworkInterface      bool          `yaml:"enable_output_network_interface" json:"enable_output_network_interface"`
 	OutputNetworkInterface            string        `yaml:"output_network_interface" json:"output_network_interface"`
@@ -129,13 +142,21 @@ type Settings struct {
 	LogKeep      int    `yaml:"log_keep" json:"log_keep"`
 	EnableIPv6   bool   `yaml:"enable_ipv6" json:"enable_ipv6"`
 	// Management API (see docs/API.md). Empty api_listen disables it.
-	APIListen         string   `yaml:"api_listen" json:"api_listen"`
-	APIToken          string   `yaml:"api_token" json:"api_token"`
-	APIAllow          []string `yaml:"api_allow" json:"api_allow"`
-	APITLSCert        string   `yaml:"api_tls_cert" json:"api_tls_cert"`
-	APITLSKey         string   `yaml:"api_tls_key" json:"api_tls_key"`
-	ExcludeNTP        bool     `yaml:"exclude_ntp" json:"exclude_ntp"`
-	ShutdownCorrectly bool     `yaml:"shutdown_correctly" json:"shutdown_correctly"`
+	APIListen  string   `yaml:"api_listen" json:"api_listen"`
+	APIToken   string   `yaml:"api_token" json:"api_token"`
+	APIAllow   []string `yaml:"api_allow" json:"api_allow"`
+	APITLSCert string   `yaml:"api_tls_cert" json:"api_tls_cert"`
+	APITLSKey  string   `yaml:"api_tls_key" json:"api_tls_key"`
+	ExcludeNTP bool     `yaml:"exclude_ntp" json:"exclude_ntp"`
+	// Telegram bot: manage the router and receive SMS (see docs/TELEGRAM.md).
+	TelegramBotToken string  `yaml:"telegram_bot_token" json:"telegram_bot_token"`
+	TelegramChatIDs  []int64 `yaml:"telegram_chat_ids" json:"telegram_chat_ids"`
+	// Reach api.telegram.org through the local proxy (routed by sections).
+	TelegramViaProxy bool `yaml:"telegram_via_proxy" json:"telegram_via_proxy"`
+	// Forward SMS from the router's modem to the chats; delete them after.
+	SMSForward         bool `yaml:"sms_forward" json:"sms_forward"`
+	SMSDeleteForwarded bool `yaml:"sms_delete_forwarded" json:"sms_delete_forwarded"`
+	ShutdownCorrectly  bool `yaml:"shutdown_correctly" json:"shutdown_correctly"`
 }
 
 // Section represents a configuration section (subscription, json_outbound, etc.)
@@ -438,11 +459,15 @@ func parseConfig(data []byte, name string) (*Config, error) {
 // Validate checks values that would otherwise cause runtime failures.
 func (c *Config) Validate() error {
 	s := c.Settings
-	if s.DNSCheckInterval <= 0 || s.DNSRecoveryCheckInterval <= 0 || s.DNSCheckTimeout <= 0 {
-		return fmt.Errorf("dns check intervals and timeout must be positive")
+	// Lower bounds: a tiny interval (10 = ten nanoseconds) spins a ticker.
+	if s.DNSCheckInterval < time.Second || s.DNSRecoveryCheckInterval < time.Second || s.DNSCheckTimeout < 100*time.Millisecond {
+		return fmt.Errorf("dns check intervals must be at least 1s and the timeout at least 100ms")
 	}
 	if s.UpdateInterval < 0 || s.ComponentUpdateCheckInterval < 0 {
 		return fmt.Errorf("update intervals must not be negative")
+	}
+	if (s.UpdateInterval > 0 && s.UpdateInterval < time.Minute) || (s.ComponentUpdateCheckInterval > 0 && s.ComponentUpdateCheckInterval < time.Minute) {
+		return fmt.Errorf("update intervals must be at least 1m")
 	}
 	names := make(map[string]bool, len(c.Sections))
 	for _, sec := range c.Sections {
@@ -453,9 +478,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate section %q", sec.Name)
 		}
 		names[sec.Name] = true
-		switch sec.Provider {
-		case "", ProviderTypeSingBox, ProviderTypeZapret, ProviderTypeZapret2, ProviderTypeByeDPI, ProviderTypeAuto:
-		default:
+		if sec.Provider != "" && !slices.Contains(KnownProviders(), sec.Provider) {
 			return fmt.Errorf("section %q: unknown provider %q", sec.Name, sec.Provider)
 		}
 		switch sec.Action {
@@ -469,10 +492,10 @@ func (c *Config) Validate() error {
 			continue
 		}
 		if !names[sub.Section] {
-			return fmt.Errorf("subscription %q refers to unknown section %q", sub.URL, sub.Section)
+			return fmt.Errorf("subscription %q refers to unknown section %q", MaskURL(sub.URL), sub.Section)
 		}
 		if u, err := url.Parse(sub.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("subscription url %q must be a valid http(s) URL", sub.URL)
+			return fmt.Errorf("subscription url %q must be a valid http(s) URL", MaskURL(sub.URL))
 		}
 	}
 	return nil

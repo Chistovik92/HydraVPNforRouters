@@ -16,10 +16,12 @@ const (
 	OpRemoveByName  = "remove_name"   // remove the item whose "name" is Name
 	OpReplaceByName = "replace_name"  // replace the item whose "name" is Name with Value
 	OpReplaceIndex  = "replace_index" // replace the item at Index with Value
+	OpSet           = "set"           // set the key Name of the mapping Key to Value
 )
 
 // Edit changes one top-level list of the configuration file
-// (sections, subscription_urls, servers, ...).
+// (sections, subscription_urls, servers, ...) or, with OpSet, one key of a
+// top-level mapping (settings).
 type Edit struct {
 	Key   string
 	Op    string
@@ -100,30 +102,65 @@ func documentRoot(doc *yaml.Node) *yaml.Node {
 // listNode returns the sequence stored under key, creating it (or turning a
 // null / flow "[]" value into a block sequence) as needed.
 func listNode(root *yaml.Node, key string) (*yaml.Node, error) {
+	return childNode(root, key, yaml.SequenceNode, "!!seq", "list")
+}
+
+// mapNode returns the mapping stored under key, creating it as needed.
+func mapNode(root *yaml.Node, key string) (*yaml.Node, error) {
+	return childNode(root, key, yaml.MappingNode, "!!map", "mapping")
+}
+
+// childNode returns the value of key in root if it is of the given kind,
+// turns an empty value into one, or appends the key when it is missing.
+func childNode(root *yaml.Node, key string, kind yaml.Kind, tag, what string) (*yaml.Node, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value != key {
 			continue
 		}
 		v := root.Content[i+1]
-		switch v.Kind {
-		case yaml.SequenceNode:
+		switch {
+		case v.Kind == kind:
 			return v, nil
-		case yaml.ScalarNode:
-			if v.Tag == "!!null" || v.Value == "" {
-				seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq",
-					HeadComment: v.HeadComment, LineComment: v.LineComment, FootComment: v.FootComment}
-				root.Content[i+1] = seq
-				return seq, nil
-			}
+		case v.Kind == yaml.ScalarNode && (v.Tag == "!!null" || v.Value == ""):
+			n := &yaml.Node{Kind: kind, Tag: tag,
+				HeadComment: v.HeadComment, LineComment: v.LineComment, FootComment: v.FootComment}
+			root.Content[i+1] = n
+			return n, nil
 		}
-		return nil, fmt.Errorf("%q is not a list in the config file", key)
+		return nil, fmt.Errorf("%q is not a %s in the config file", key, what)
 	}
-	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, seq)
-	return seq, nil
+	n := &yaml.Node{Kind: kind, Tag: tag}
+	root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, n)
+	return n, nil
+}
+
+// setKey sets one key of a mapping, keeping the comments around its value.
+func setKey(root *yaml.Node, e Edit) error {
+	m, err := mapNode(root, e.Key)
+	if err != nil {
+		return err
+	}
+	var n yaml.Node
+	if err := n.Encode(e.Value); err != nil {
+		return err
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == e.Name {
+			old := m.Content[i+1]
+			n.HeadComment, n.LineComment, n.FootComment = old.HeadComment, old.LineComment, old.FootComment
+			m.Content[i+1] = &n
+			return nil
+		}
+	}
+	m.Style = 0
+	m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Name}, &n)
+	return nil
 }
 
 func applyEdit(root *yaml.Node, e Edit) error {
+	if e.Op == OpSet {
+		return setKey(root, e)
+	}
 	seq, err := listNode(root, e.Key)
 	if err != nil {
 		return err

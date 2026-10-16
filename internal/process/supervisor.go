@@ -26,6 +26,10 @@ type Supervisor struct {
 	// daemon that was killed (SIGKILL, crash, "stop" on Windows) is stopped
 	// before the next start instead of holding the ports.
 	PidFile string
+	// OnStart, if set, runs in its own goroutine after every successful
+	// start, respawns included (for example to configure a network
+	// interface the child creates).
+	OnStart func(pid int)
 
 	mu           sync.Mutex
 	bin          string
@@ -89,6 +93,9 @@ func (s *Supervisor) startLocked(bin string, args []string) error {
 	s.log("info", "started (PID: %d)", cmd.Process.Pid)
 
 	go s.monitor(cmd, s.done)
+	if s.OnStart != nil {
+		go s.OnStart(cmd.Process.Pid)
+	}
 	return nil
 }
 

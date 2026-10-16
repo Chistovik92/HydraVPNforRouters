@@ -20,21 +20,35 @@ Changes that need the service to restart parts of itself (reload, subscription o
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/version` | version and commit |
+| GET | `/api/v1/capabilities` | `api` level, `features` (`rules`, `settings`, `update`, …), section `providers`, `actions`, read-only settings: a client hides what the router does not have |
 | GET | `/api/v1/status` | service, providers, DNS, firewall, subscriptions, lists, component versions (`components.<name>`: `installed`, `latest`, `update_available`, `too_old`, `untested_newer` — the installed one is newer than tested, `latest_untested` — the latest release is newer than tested, `error`, `checked`) |
 | GET | `/api/v1/config` | configuration with masked secrets |
 | POST | `/api/v1/reload` | re-read the config file and apply it |
 | POST | `/api/v1/restart` | stop and start all components (`202`) |
 | GET/POST | `/api/v1/sections` | list / add sections |
-| PUT/DELETE | `/api/v1/sections/{name}` | replace / delete a section (a section used by a subscription cannot be deleted) |
+| PUT/DELETE | `/api/v1/sections/{name}` | replace / delete a section (a section used by a subscription cannot be deleted). Masked items (`********`) in `selector_proxy_links` and `outbound_jsons` keep their stored values, so a section edited from the copy the API returned keeps its keys |
 | GET | `/api/v1/logs?n=200&level=info` | last journal entries |
 | GET | `/api/v1/logs/stream` | server-sent events with new entries (the only path that accepts `?token=`, because EventSource cannot send headers) |
 | GET | `/api/v1/subscriptions` | subscriptions (`index` identifies one) |
 | POST | `/api/v1/subscriptions` | add `{"section":"main","url":"https://…"}`; saved to the config, applied at once |
+| PUT | `/api/v1/subscriptions/{index}` | replace (section, interval, user agent, …); the masked URL from the list keeps the stored one |
 | POST | `/api/v1/subscriptions/{index}/refresh` | fetch now |
 | DELETE | `/api/v1/subscriptions/{index}` | remove |
 | GET | `/api/v1/servers` | inbound servers |
 | POST | `/api/v1/servers` | add a server (same fields as `servers:` in the config) |
+| PUT | `/api/v1/servers/{name}` | replace a server; masked secrets keep their stored values |
 | DELETE | `/api/v1/servers/{name}` | remove |
+| GET/POST | `/api/v1/rules` | routing rules (`rules:` in the config; `index` identifies one) / add one; a rule must point at an existing section |
+| PUT/DELETE | `/api/v1/rules/{index}` | replace / delete a rule |
+| GET/POST | `/api/v1/lists` | community lists / add one |
+| PUT/DELETE | `/api/v1/lists/{name}` | replace / delete a list (a list used by a section cannot be deleted) |
+| GET | `/api/v1/cores` | sing-box and the node cores (`xray`, `openflux`, `olcrtc`, `amneziawg`): `binary`, `installed` version, `managed` (the version the service installed), `selectable`, `kept_versions` (for a rollback without network), `install` progress |
+| GET | `/api/v1/cores/{name}/versions` | releases of `sing-box` or `xray` that have a build for this device, betas included (`prerelease: true`), newest first |
+| POST | `/api/v1/cores/{name}/install` | `{"version":"1.15.0-beta.1"}`: download the build for this device (SHA-256 from the GitHub release), check that it runs and reports that version, switch to it (`202`; follow `GET /api/v1/cores`, `install.state`: `downloading` → `installing` → `done` / `failed`). The previous version is kept, so installing it again is a rollback without network. sing-box is pointed at the managed link once (`singbox_binary`); after that a switch restarts it. `409` an install is running |
+| GET | `/api/v1/sms` | `{"modems":["keenetic"],"messages":[…]}`: SMS sources found and the last 20 SMS (see [TELEGRAM.md](TELEGRAM.md)) |
+| POST | `/api/v1/sms` | `{"to":"+79001234567","text":"…"}`: send an SMS through the router's modem |
+| GET | `/api/v1/settings` | settings by key; durations as `"24h0m0s"`, the token masked |
+| PATCH (or POST) | `/api/v1/settings` | change some settings (POST is the same, for clients without PATCH): `{"disable_quic":true,"update_interval":"6h"}`. Durations only as text (`"30s"`, `"6h"`; a bare number is refused); DNS check intervals are at least 1s, update intervals at least 1m. `api_*`, file paths (`singbox_binary`, `config_path`, `cache_path`, `log_file`) and bookkeeping keys are read-only here (`400`): a mistake there would lock the app out. Only the changed keys are written |
 | GET | `/api/v1/nodes` | selector / url-test groups and proxies with the last latency and country |
 | POST | `/api/v1/nodes/select` | `{"group":"main","node":"Node 1"}` |
 | POST | `/api/v1/nodes/test` | `{"node":"Node 1"}` → `{"delay_ms":123}` |
