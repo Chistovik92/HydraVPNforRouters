@@ -10,8 +10,6 @@ package selfupdate
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -19,12 +17,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,7 +171,7 @@ func (u *Updater) unsupported() string {
 	case u.o.Binary == "":
 		return "cannot find the executable"
 	}
-	name, err := AssetNameFor(u.o.Flavor, "0.0.0", u.o.GOOS, u.o.GOARCH, goarm())
+	name, err := AssetNameFor(u.o.Flavor, "0.0.0", u.o.GOOS, u.o.GOARCH, GOARM())
 	if err != nil {
 		return err.Error()
 	}
@@ -190,18 +186,6 @@ func runningInContainer() bool {
 		}
 	}
 	return os.Getenv("container") != ""
-}
-
-// goarm returns the GOARM the binary was built with ("7" by default).
-func goarm() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			if s.Key == "GOARM" && s.Value != "" {
-				return s.Value[:1]
-			}
-		}
-	}
-	return "7"
 }
 
 // Release files are named after the OS they are installed on:
@@ -403,7 +387,7 @@ func (u *Updater) apply(ctx context.Context, ver string) error {
 		}
 		ver = st.Latest
 	}
-	asset, err := AssetNameFor(u.o.Flavor, ver, u.o.GOOS, u.o.GOARCH, goarm())
+	asset, err := AssetNameFor(u.o.Flavor, ver, u.o.GOOS, u.o.GOARCH, GOARM())
 	if err != nil {
 		return err
 	}
@@ -411,7 +395,7 @@ func (u *Updater) apply(ctx context.Context, ver string) error {
 	want, err := u.checksum(ctx, base+"checksums.txt", asset)
 	if err != nil && u.o.Flavor != FlavorLinux {
 		// Releases before 1.2.5 only have the generic Linux file.
-		if generic, gerr := AssetName(ver, u.o.GOOS, u.o.GOARCH, goarm()); gerr == nil {
+		if generic, gerr := AssetName(ver, u.o.GOOS, u.o.GOARCH, GOARM()); gerr == nil {
 			if w, werr := u.checksum(ctx, base+"checksums.txt", generic); werr == nil {
 				asset, want, err = generic, w, nil
 			}
@@ -484,61 +468,9 @@ func (u *Updater) checksum(ctx context.Context, sumsURL, asset string) (string, 
 // download writes the asset to dst while hashing it and refuses it unless
 // the hash matches.
 func (u *Updater) download(ctx context.Context, src, dst, wantSHA string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := u.client().Do(req)
-	if err != nil {
-		return fmt.Errorf("download: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: HTTP %d", filepath.Base(src), resp.StatusCode)
-	}
-	if resp.ContentLength > maxBinarySize {
-		return fmt.Errorf("download: file is too large (%d bytes)", resp.ContentLength)
-	}
-	u.set(func(s *Status) { s.Size = resp.ContentLength })
-
-	if resp.ContentLength > 0 {
-		if free, err := freeSpace(filepath.Dir(dst)); err == nil && free < uint64(resp.ContentLength)+freeSpaceSlack {
-			return fmt.Errorf("not enough space in %s: %d KB free, %d KB needed", filepath.Dir(dst), free>>10, (resp.ContentLength+freeSpaceSlack)>>10)
-		}
-	}
-
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
-	if err != nil {
-		return err
-	}
-	h := sha256.New()
-	pw := &progressWriter{u: u}
-	_, copyErr := io.Copy(io.MultiWriter(f, h, pw), io.LimitReader(resp.Body, maxBinarySize+1))
-	closeErr := f.Close()
-	switch {
-	case copyErr != nil:
-		return fmt.Errorf("download: %w", copyErr)
-	case closeErr != nil:
-		return closeErr
-	case pw.n > maxBinarySize:
-		return errors.New("download: file is too large")
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != wantSHA {
-		return fmt.Errorf("checksum mismatch: got %s, want %s", got, wantSHA)
-	}
-	return os.Chmod(dst, 0755)
-}
-
-type progressWriter struct {
-	u *Updater
-	n int64
-}
-
-func (p *progressWriter) Write(b []byte) (int, error) {
-	p.n += int64(len(b))
-	n := p.n
-	p.u.set(func(s *Status) { s.Downloaded = n })
-	return len(b), nil
+	return Fetch(ctx, u.client(), src, dst, wantSHA, maxBinarySize, func(done, total int64) {
+		u.set(func(s *Status) { s.Downloaded, s.Size = done, total })
+	})
 }
 
 // verifyRuns starts the new binary with "version" and checks that it runs
@@ -565,21 +497,13 @@ func (u *Updater) client() *http.Client {
 	if u.o.Client != nil {
 		return u.o.Client
 	}
-	tr := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		TLSHandshakeTimeout: 30 * time.Second,
-		TLSClientConfig:     &tls.Config{RootCAs: RootCAs()},
-	}
+	proxy := ""
 	if u.o.Proxy != nil {
-		if p := u.o.Proxy(); p != "" {
-			if pu, err := url.Parse(p); err == nil {
-				tr.Proxy = http.ProxyURL(pu)
-			}
-		}
+		proxy = u.o.Proxy()
 	}
 	// GitHub redirects release downloads to its CDN; keep the default
 	// redirect policy. Downloads may be slow on a router.
-	return &http.Client{Transport: tr, Timeout: applyTimeout}
+	return NewHTTPClient(proxy, applyTimeout)
 }
 
 // entwareCABundle is where Keenetic Entware keeps CA certificates; Go only

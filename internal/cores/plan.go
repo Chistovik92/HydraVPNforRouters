@@ -157,6 +157,19 @@ func FindBinary(k Kind, configured string, extraDirs ...string) string {
 	return ""
 }
 
+// Resolve follows symlinks, so a version switched behind the same link
+// (bin/xray -> versions/xray/26.10.10/xray) is seen as a different binary
+// and its process restarts.
+func Resolve(p string) string {
+	if p == "" {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
 // FindTool looks up a helper (awg, ip) the same way.
 func FindTool(name string) string {
 	if p, err := exec.LookPath(name); err == nil {

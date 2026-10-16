@@ -54,6 +54,7 @@ type Options struct {
 	Clash      *ClashClient
 	Radar      *radar.Client // the bot client; tests replace it
 	Updater    Updater       // self-update; nil disables /api/v1/update
+	Cores      CoreInstaller // core versions; nil disables installing them
 }
 
 // Server is the management API.
@@ -382,6 +383,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.updateRoutes(mux)
 	s.toolRoutes(mux)
 	s.manageRoutes(mux)
+	s.coreRoutes(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

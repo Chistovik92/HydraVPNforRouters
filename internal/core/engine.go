@@ -273,6 +273,18 @@ func (e *Engine) singboxConfig() *singbox.Config {
 	return singbox.ConfigFromSettings(e.config, e.subscriptionMgr, singbox.WithLists(e.listsMgr), singbox.WithCores(e.applyCores()))
 }
 
+// RefreshCores re-renders the sing-box config and the core processes with
+// the current settings: after a core version was switched behind the same
+// link the config is unchanged, but the binaries are not.
+func (e *Engine) RefreshCores() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.GetState() != EngineStateRunning {
+		return nil
+	}
+	return e.singboxProvider.Reload(e.singboxConfig())
+}
+
 // stopComponents stops everything in reverse order; stopping a component
 // that was never started is a no-op.
 func (e *Engine) stopComponents() {

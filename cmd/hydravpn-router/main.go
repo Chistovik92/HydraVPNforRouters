@@ -18,6 +18,7 @@ import (
 
 	"github.com/Chistovik92/hydravpn-router/internal/config"
 	"github.com/Chistovik92/hydravpn-router/internal/core"
+	"github.com/Chistovik92/hydravpn-router/internal/cores"
 	"github.com/Chistovik92/hydravpn-router/internal/diagnostics"
 	"github.com/Chistovik92/hydravpn-router/internal/domainmap"
 	"github.com/Chistovik92/hydravpn-router/internal/firewall"
@@ -132,12 +133,7 @@ func (c *StartCmd) Run(g *Globals) error {
 	restartCh := make(chan struct{}, 1)
 	updater := selfupdate.New(selfupdate.Options{
 		Current: version.Version,
-		Proxy: func() string {
-			if engine.GetConfig().Settings.DownloadComponentsViaProxy {
-				return fmt.Sprintf("http://127.0.0.1:%d", config.MixedProxyPort)
-			}
-			return ""
-		},
+		Proxy:   downloadProxy(engine),
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
@@ -151,7 +147,15 @@ func (c *StartCmd) Run(g *Globals) error {
 		return s.ComponentUpdateCheckEnabled, s.ComponentUpdateCheckInterval
 	})
 
-	api, err := mgmt.New(mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir, Updater: updater})
+	// sing-box and Xray versions chosen in the app or web UI.
+	installer := cores.NewInstaller(cores.InstallerOptions{
+		Dir:   core.CoreInstallDir(),
+		Proxy: downloadProxy(engine),
+		OnLog: logLine,
+	})
+
+	api, err := mgmt.New(mgmt.Options{Engine: engine, Logger: journal, ConfigFile: c.ConfigFile, RuntimeDir: g.RuntimeDir,
+		Updater: updater, Cores: installer})
 	if err != nil {
 		logLine("error", "management API disabled: "+err.Error())
 	} else if api != nil {
@@ -616,4 +620,15 @@ func main() {
 		}
 	}
 	ctx.FatalIfErrorf(err)
+}
+
+// downloadProxy returns the proxy for release downloads: the local mixed
+// inbound when download_components_via_proxy is set.
+func downloadProxy(engine *core.Engine) func() string {
+	return func() string {
+		if engine.GetConfig().Settings.DownloadComponentsViaProxy {
+			return fmt.Sprintf("http://127.0.0.1:%d", config.MixedProxyPort)
+		}
+		return ""
+	}
 }

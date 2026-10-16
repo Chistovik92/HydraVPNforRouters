@@ -163,7 +163,7 @@ func (m *Manager) specs(p *Plan) ([]spec, error) {
 			m.log("warn", "xray node %q skipped: %v", name, err)
 		}
 		cfg := m.path("xray.json")
-		out = append(out, spec{key: "xray", kind: Xray, names: names(xs), bin: p.Bins[Xray],
+		out = append(out, spec{key: "xray", kind: Xray, names: names(xs), bin: Resolve(p.Bins[Xray]),
 			args: []string{"run", "-c", cfg}, files: map[string]string{cfg: string(data)}})
 	}
 	for _, in := range p.Of(OpenFlux) {

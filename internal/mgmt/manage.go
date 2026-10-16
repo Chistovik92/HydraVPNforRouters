@@ -70,14 +70,17 @@ func listName(l config.CommunityList) string { return l.Name }
 // ---------------------------------------------------------------- capabilities
 
 // apiLevel grows when endpoints are added; clients compare it, not versions.
-const apiLevel = 2
+const apiLevel = 3
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	features := []string{
 		"sections", "sections.unmask", "subscriptions", "subscriptions.edit",
 		"servers", "servers.edit", "rules", "lists", "settings",
 		"nodes", "logs", "logs.stream", "check", "radar",
-		"domainmap", "genconfig", "keenetic",
+		"domainmap", "genconfig", "keenetic", "cores",
+	}
+	if s.opts.Cores != nil {
+		features = append(features, "cores.install")
 	}
 	if s.opts.Updater != nil && s.opts.Updater.Status().Supported {
 		features = append(features, "update")

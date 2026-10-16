@@ -105,7 +105,9 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 		detours:  map[string]string{},
 	}
 	b.c = &Config{
-		BinaryPath: cfg.Settings.SingBoxBinary,
+		// The real file, so switching the installed version behind the
+		// same link restarts sing-box instead of reloading the old one.
+		BinaryPath: cores.Resolve(cfg.Settings.SingBoxBinary),
 		ConfigPath: cfg.Settings.ConfigPath,
 		PidFile:    config.PidFile(cfg, "singbox"),
 		LogLevel:   cfg.Settings.LogLevel,

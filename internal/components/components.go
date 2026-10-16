@@ -6,11 +6,9 @@ package components
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -210,19 +208,9 @@ func latestRelease(ctx context.Context, repo, proxy string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", version.UserAgent())
-	// Same CA pool as the self-updater: KeeneticOS has no system store and
-	// only Entware's bundle makes api.github.com verifiable.
-	tr := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		TLSHandshakeTimeout: 30 * time.Second,
-		TLSClientConfig:     &tls.Config{RootCAs: selfupdate.RootCAs()},
-	}
-	if proxy != "" {
-		if u, err := url.Parse(proxy); err == nil {
-			tr.Proxy = http.ProxyURL(u)
-		}
-	}
-	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+	// Same client as the self-updater: KeeneticOS has no system CA store
+	// and only Entware's bundle makes api.github.com verifiable.
+	client := selfupdate.NewHTTPClient(proxy, 30*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

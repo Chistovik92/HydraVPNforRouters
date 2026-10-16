@@ -42,6 +42,9 @@ Changes that need the service to restart parts of itself (reload, subscription o
 | PUT/DELETE | `/api/v1/rules/{index}` | replace / delete a rule |
 | GET/POST | `/api/v1/lists` | community lists / add one |
 | PUT/DELETE | `/api/v1/lists/{name}` | replace / delete a list (a list used by a section cannot be deleted) |
+| GET | `/api/v1/cores` | sing-box and the node cores (`xray`, `openflux`, `olcrtc`, `amneziawg`): `binary`, `installed` version, `managed` (the version the service installed), `selectable`, `kept_versions` (for a rollback without network), `install` progress |
+| GET | `/api/v1/cores/{name}/versions` | releases of `sing-box` or `xray` that have a build for this device, betas included (`prerelease: true`), newest first |
+| POST | `/api/v1/cores/{name}/install` | `{"version":"1.15.0-beta.1"}`: download the build for this device (SHA-256 from the GitHub release), check that it runs and reports that version, switch to it (`202`; follow `GET /api/v1/cores`, `install.state`: `downloading` → `installing` → `done` / `failed`). The previous version is kept, so installing it again is a rollback without network. sing-box is pointed at the managed link once (`singbox_binary`); after that a switch restarts it. `409` an install is running |
 | GET | `/api/v1/settings` | settings by key; durations as `"24h0m0s"`, the token masked |
 | PATCH | `/api/v1/settings` | change some settings: `{"disable_quic":true,"update_interval":"6h"}`. Durations take `"6h"` or nanoseconds. `api_*`, file paths (`singbox_binary`, `config_path`, `cache_path`, `log_file`) and bookkeeping keys are read-only here (`400`): a mistake there would lock the app out. Only the changed keys are written |
 | GET | `/api/v1/nodes` | selector / url-test groups and proxies with the last latency and country |
