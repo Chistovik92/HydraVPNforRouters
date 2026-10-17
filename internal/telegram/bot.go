@@ -177,10 +177,17 @@ func (b *Bot) Run(ctx context.Context) {
 		go b.smsLoop(ctx)
 	}
 	var offset int64
+	offsetToken := "" // the bot the offset belongs to
 	for ctx.Err() == nil {
-		if b.settings().Token == "" {
+		token := b.settings().Token
+		if token == "" {
 			sleep(ctx, retryOnError) // set later from the app
 			continue
+		}
+		// Update ids are per bot: an offset of the old bot would make a new
+		// one skip its pending messages.
+		if token != offsetToken {
+			offset, offsetToken = 0, token
 		}
 		var ups []update
 		err := b.call(ctx, "getUpdates", map[string]interface{}{"offset": offset, "timeout": pollTimeout,
