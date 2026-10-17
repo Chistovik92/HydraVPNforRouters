@@ -33,6 +33,9 @@ ARCHES=(
 )
 
 mkdir -p "$OUTPUT_DIR"
+# Absolute: go build runs inside each core's source tree, and the release
+# workflow passes a relative "dist".
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 SRC_DIR="$(mktemp -d)"
 trap 'rm -rf "$SRC_DIR"' EXIT
 
@@ -60,7 +63,14 @@ for core in "${CORES[@]}"; do
     done
 done
 
-(cd "$OUTPUT_DIR" && for f in core-*-linux-*; do
-    [ -f "$f" ] && sha256sum "$f" | sed 's/ \*/  /' >> checksums.txt
-done)
+built=0
+for f in "$OUTPUT_DIR"/core-*-linux-*; do
+    [ -f "$f" ] || continue
+    (cd "$OUTPUT_DIR" && sha256sum "$(basename "$f")" | sed 's/ \*/  /' >> checksums.txt)
+    built=$((built + 1))
+done
+if [ "$built" -eq 0 ]; then
+    echo "no core was built" >&2
+    exit 1
+fi
 echo "Cores: $OUTPUT_DIR/core-*"
