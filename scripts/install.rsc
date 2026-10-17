@@ -9,7 +9,7 @@
 #   /import hydravpn-install.rsc
 #
 # Optional settings, set them before /import:
-#   :global hydraVersion "1.3.0"            install this version (default: the one of this script)
+#   :global hydraVersion "1.3.1"            install this version (default: the one of this script)
 #   :global hydraDisk "disk1"               where the image and the config live (default: disk1, or flash if there is no disk)
 #   :global hydraRouteLan "192.168.88.0/24" also send this LAN through the container (routing table + mangle rule)
 #
@@ -21,7 +21,7 @@
 :global hydraDisk
 :global hydraRouteLan
 
-:local ver "1.3.0"
+:local ver "1.3.1"
 :if ([:typeof $hydraVersion] = "str" && [:len $hydraVersion] > 0) do={ :set ver $hydraVersion }
 :local repo "Chistovik92/HydraVPNforRouters"
 
