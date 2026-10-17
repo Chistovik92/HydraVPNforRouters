@@ -94,7 +94,12 @@ func (b *Bot) client(proxy string) *http.Client {
 
 // call invokes a Bot API method.
 func (b *Bot) call(ctx context.Context, method string, req, resp interface{}) error {
-	st := b.settings()
+	return b.callWith(ctx, b.settings(), method, req, resp)
+}
+
+// callWith uses the given settings snapshot: getUpdates must go to the bot
+// whose offset it carries, even if the token changes meanwhile.
+func (b *Bot) callWith(ctx context.Context, st Settings, method string, req, resp interface{}) error {
 	if st.Token == "" {
 		return errNoToken
 	}
@@ -177,13 +182,20 @@ func (b *Bot) Run(ctx context.Context) {
 		go b.smsLoop(ctx)
 	}
 	var offset int64
+	offsetToken := "" // the bot the offset belongs to
 	for ctx.Err() == nil {
-		if b.settings().Token == "" {
+		st := b.settings() // one snapshot: the token and its offset go together
+		if st.Token == "" {
 			sleep(ctx, retryOnError) // set later from the app
 			continue
 		}
+		// Update ids are per bot: an offset of the old bot would make a new
+		// one skip its pending messages.
+		if st.Token != offsetToken {
+			offset, offsetToken = 0, st.Token
+		}
 		var ups []update
-		err := b.call(ctx, "getUpdates", map[string]interface{}{"offset": offset, "timeout": pollTimeout,
+		err := b.callWith(ctx, st, "getUpdates", map[string]interface{}{"offset": offset, "timeout": pollTimeout,
 			"allowed_updates": []string{"message"}}, &ups)
 		if err != nil {
 			if ctx.Err() == nil {

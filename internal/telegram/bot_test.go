@@ -139,3 +139,50 @@ func TestHelpListsCommands(t *testing.T) {
 		t.Errorf("%s %v", cmd, args)
 	}
 }
+
+func TestNewTokenStartsFromItsOwnUpdates(t *testing.T) {
+	var mu sync.Mutex
+	token := "1:old"
+	var offsetsOfNew []float64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/bot1:old/getUpdates"):
+			// The old bot has update 500; afterwards the token is replaced.
+			token = "2:new"
+			w.Write([]byte(`{"ok":true,"result":[{"update_id":500}]}`))
+		case strings.HasPrefix(r.URL.Path, "/bot2:new/getUpdates"):
+			offsetsOfNew = append(offsetsOfNew, req["offset"].(float64))
+			time.Sleep(10 * time.Millisecond)
+			w.Write([]byte(`{"ok":true,"result":[]}`))
+		default:
+			w.Write([]byte(`{"ok":true,"result":{}}`))
+		}
+	}))
+	defer srv.Close()
+	b := New(Options{
+		Settings: func() Settings { mu.Lock(); defer mu.Unlock(); return Settings{Token: token} },
+		API:      &fakeAPI{}, BaseURL: srv.URL, Client: srv.Client(),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	go b.Run(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(offsetsOfNew)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(offsetsOfNew) == 0 || offsetsOfNew[0] != 0 {
+		t.Errorf("the new bot was polled with offsets %v, want 0 first", offsetsOfNew)
+	}
+}

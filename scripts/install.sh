@@ -8,7 +8,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/scripts/install.sh | sh
-#   sh install.sh --yes --version 1.3.0
+#   sh install.sh --yes --version 1.3.1
 #
 # Release files are named after the OS: hydravpn-router-<ver>-openwrt-<arch>
 # (OpenWrt), -keeneticos-<arch> (KeeneticOS, Entware). MikroTik RouterOS has

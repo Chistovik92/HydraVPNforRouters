@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1
+
+- **Telegram bot: a new token starts from its own updates.** The token is read live (it can be changed from the app without a restart), but the `getUpdates` offset of the previous bot was kept, so a new bot with lower update ids skipped and acknowledged its pending messages. The offset now belongs to a token and the poll uses one settings snapshot for both.
+- **Release:** `scripts/build-cores.sh` writes the cores to an absolute `dist` path (the 1.3.0 release run first failed on it; 1.3.0 was published from the fixed commit).
+
 ## 1.3.0
 
 Full management from the Hydra app, the cores of the Hydra app on the router, a choice of core versions, a Telegram bot and SMS from the modem.
