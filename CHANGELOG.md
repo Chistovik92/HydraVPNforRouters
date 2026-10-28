@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.2
+
+Engines updated to the current upstream releases (`scripts/check-upstream.sh` reported three newer ones).
+
+- **sing-box 1.14.4** (was 1.14.3): fixes and improvements upstream, no format changes. The generated config is accepted by `sing-box check` of 1.14.4 (`hydravpn-router selftest`). The container image pins `sing-box:v1.14.4`.
+- **Xray-core 26.10.21** (was 26.10.10): a security update upstream. 26.10.10 and 26.10.17 shipped root certificates whose keys were broken and were withdrawn; 26.10.21 removes them and is built with Go 1.27.3. Update the Xray core on routers (`core install xray latest` or the app).
+- **zapret2 1.0.6** (was 1.0.5.2): QUIC/TLS dissection fixes, `?` and `#` end a domain in URLs, nfqws2 caps the TCP window-scale factor at 14, blockcheck2 improvements. The launch parameters used by the service did not change.
+- Unchanged and already the latest: zapret 72.13, ByeDPI 0.17.3, amneziawg-go 3.1.20260828, **OpenFlux 0.13.0** (the `core-openflux-linux-*` assets are built from tag v0.13.0 by `scripts/build-cores.sh` and published with every release).
+- Not verified on a router: the new engine versions were checked against the generated config and the unit tests, not on hardware.
+
 ## 1.3.1
 
 - **Telegram bot: a new token starts from its own updates.** The token is read live (it can be changed from the app without a restart), but the `getUpdates` offset of the previous bot was kept, so a new bot with lower update ids skipped and acknowledged its pending messages. The offset now belongs to a token and the poll uses one settings snapshot for both.
