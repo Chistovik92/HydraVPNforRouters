@@ -1,6 +1,6 @@
 # Установка HydraVPN for Router / Installation Guide
 
-> **Версия / Version**: 1.3.1
+> **Версия / Version**: 1.3.2
 
 ---
 
@@ -15,15 +15,15 @@ Release files are named after the **OS they are installed on**: `openwrt`, `keen
 | **KeeneticOS** (Entware) | `hydravpn-router-<ver>-keeneticos-<arch>` | `hydravpn-router-keeneticos_<ver>_<arch>.ipk` | `mipsle` (`mipsel-3.4`), `mips` (`mips-3.4`), `arm64` (`aarch64-3.10`), `armv7` (`armv7sf-3.2`), `armv5` (`armv5sf-3.2`), `amd64` (`x64-3.2`) |
 | **MikroTik RouterOS 7** | `hydravpn-router-<ver>-routeros-<arch>` | `hydravpn-router-routeros-<ver>-<arch>.tar` (образ контейнера / container image) | `arm64`, `armv7` (ARM), `amd64` (x86) |
 
-`<ver>` без буквы `v` (например `1.3.1`), тег релиза — `v1.3.1`. Бинарники одной архитектуры идентичны (статические, без зависимостей); ОС в имени говорит установщику и обновлению из веб-интерфейса, какой файл брать. MIPS-сборки используют softfloat.
-`<ver>` has no `v` prefix (e.g. `1.3.1`); the tag is `v1.3.1`. Binaries of one architecture are identical static files; the OS in the name tells the installer and the web UI updater which file to take.
+`<ver>` без буквы `v` (например `1.3.2`), тег релиза — `v1.3.2`. Бинарники одной архитектуры идентичны (статические, без зависимостей); ОС в имени говорит установщику и обновлению из веб-интерфейса, какой файл брать. MIPS-сборки используют softfloat.
+`<ver>` has no `v` prefix (e.g. `1.3.2`); the tag is `v1.3.2`. Binaries of one architecture are identical static files; the OS in the name tells the installer and the web UI updater which file to take.
 
-Релизы до 1.3.1 содержат только `hydravpn-router-<ver>-linux-<arch>`: `install.sh` и обновление из интерфейса возвращаются к ним для старых версий.
+Релизы до 1.3.2 содержат только `hydravpn-router-<ver>-linux-<arch>`: `install.sh` и обновление из интерфейса возвращаются к ним для старых версий.
 
 ### Сколько места занимает / Disk footprint
 
-Размеры сборки 1.3.1 (без `sing-box`, он ставится отдельно из opkg). Точные цифры релиза — в `sizes.md`.
-Sizes of the 1.3.1 build (without `sing-box`, which is installed separately from opkg). Exact figures are in the release's `sizes.md`.
+Размеры сборки 1.3.2 (без `sing-box`, он ставится отдельно из opkg). Точные цифры релиза — в `sizes.md`.
+Sizes of the 1.3.2 build (without `sing-box`, which is installed separately from opkg). Exact figures are in the release's `sizes.md`.
 
 | Вариант установки / Install variant | Архитектура / Arch | Файл для скачивания / Download | На роутере / Installed |
 |---|---|---|---|
@@ -72,7 +72,7 @@ wget -qO- https://raw.githubusercontent.com/Chistovik92/HydraVPNforRouters/main/
 4. создаёт конфиг, только если его ещё нет / creates a config only if none exists;
 5. регистрирует сервис (procd / Entware rc.func), создаёт короткую команду `hydra` и запускает сервис / registers the service, creates the short `hydra` command and starts it.
 
-Опции / Options: `--yes` (без вопросов, для cron), `--version 1.3.1`, `--method docker`, `--help`.
+Опции / Options: `--yes` (без вопросов, для cron), `--version 1.3.2`, `--method docker`, `--help`.
 
 | ОС | Бинарник | Конфиг | Сервис |
 |---|---|---|---|
@@ -108,9 +108,9 @@ KeeneticOS is closed; software goes to the OPKG storage (`/opt`) on a USB drive 
 
 ```bash
 # OpenWrt
-opkg install /tmp/hydravpn-router-openwrt_1.3.1_mipsel_24kc.ipk
+opkg install /tmp/hydravpn-router-openwrt_1.3.2_mipsel_24kc.ipk
 # KeeneticOS (Entware)
-opkg install /tmp/hydravpn-router-keeneticos_1.3.1_mipsel-3.4.ipk
+opkg install /tmp/hydravpn-router-keeneticos_1.3.2_mipsel-3.4.ipk
 ```
 
 Пакеты зависят от `sing-box` (OpenWrt) / `sing-box-go` (Entware) и подтянут их сами. Конфиг помечен как `conffile` и не перезаписывается при обновлении. OpenWrt 25+ (apk) пока поддерживается только через `install.sh`.
@@ -130,7 +130,7 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. RouterOS has it
 Скрипт определяет архитектуру, скачивает `hydravpn-router-routeros-<ver>-<arch>.tar` из релиза, создаёт `veth`, bridge, NAT, mount с конфигом и контейнер, запускает его. Параметры задаются до `/import`:
 
 ```
-:global hydraVersion "1.3.1"            # другая версия (по умолчанию — версия скрипта)
+:global hydraVersion "1.3.2"            # другая версия (по умолчанию — версия скрипта)
 :global hydraDisk "disk1"               # где лежат образ и конфиг (по умолчанию disk1, без диска — flash)
 :global hydraRouteLan "192.168.88.0/24" # сразу направить эту сеть через контейнер
 ```
@@ -140,7 +140,7 @@ RouterOS has no POSIX shell, so `install.sh` does not run there. RouterOS has it
 Образ можно собрать самому / Build the image yourself:
 
 ```bash
-docker buildx build --platform linux/arm64 --build-arg VERSION=1.3.1 -t hydravpn-router:1.3.1 --output type=docker,dest=hydravpn-router.tar .
+docker buildx build --platform linux/arm64 --build-arg VERSION=1.3.2 -t hydravpn-router:1.3.2 --output type=docker,dest=hydravpn-router.tar .
 ```
 
 (`linux/arm/v7` для ARM32, `linux/amd64` для x86.) Если образ опубликован в реестре, вместо `file=` укажите `remote-image=`.

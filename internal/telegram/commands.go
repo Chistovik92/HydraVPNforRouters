@@ -291,7 +291,7 @@ func cmdCores(b *Bot, ctx context.Context, _ []string) string {
 		}
 		s.WriteString("\n")
 	}
-	s.WriteString("Сменить версию: /versions sing-box, /core xray 26.10.10")
+	s.WriteString("Сменить версию: /versions sing-box, /core xray 26.10.21")
 	return s.String()
 }
 

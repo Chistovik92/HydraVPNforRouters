@@ -5,7 +5,7 @@
 #
 # Run with --network host --cap-add NET_ADMIN --cap-add NET_RAW.
 
-ARG SING_BOX_IMAGE=ghcr.io/sagernet/sing-box:v1.14.2
+ARG SING_BOX_IMAGE=ghcr.io/sagernet/sing-box:v1.14.4
 
 FROM --platform=$BUILDPLATFORM golang:alpine AS build
 ARG VERSION=
