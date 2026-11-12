@@ -103,6 +103,21 @@ sections:
   #     - "regexp:^ads?[0-9]+\.example\.com$"
   #     - "keyword:tracker"
   #     - "203.0.113.0/24"
+  #
+  # Example DNS section: the matched domains resolve through dedicated DNS
+  # servers instead of settings.dns_server. The first server is the primary
+  # and the rest are fallbacks, tried in order (sing-box 1.14.0+; on Keenetic
+  # this is the sing-box-go package).
+  # - name: "kids"
+  #   enabled: true
+  #   action: "dns"
+  #   dns_servers:
+  #     - "94.140.14.14"       # AdGuard DNS (primary)
+  #     - "94.140.15.15"       # fallback if the primary fails
+  #   dns_type: "udp"          # default scheme for dns_servers entries (udp, tcp, tls, https)
+  #   domains:
+  #     - "namespace:youtube.com"
+  #     - "full:www.example.org"
 
 # Section Interfaces (Virtual interfaces for sections)
 interfaces:

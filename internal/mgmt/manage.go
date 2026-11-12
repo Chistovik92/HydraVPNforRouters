@@ -93,7 +93,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"version":   version.Version,
 		"features":  features,
 		"providers": config.KnownProviders(),
-		"actions":   []config.ActionType{config.ActionTypeConnection, config.ActionTypeBypass, config.ActionTypeBlock},
+		"actions":   []config.ActionType{config.ActionTypeConnection, config.ActionTypeBypass, config.ActionTypeBlock, config.ActionTypeDNS},
 		"settings":  map[string]interface{}{"read_only": readOnlySettings()},
 	})
 }

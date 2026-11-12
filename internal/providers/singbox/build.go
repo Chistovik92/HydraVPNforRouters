@@ -147,7 +147,7 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 		c.Route.Rules = append(c.Route.Rules, Rule{"protocol": "ntp", "action": "route", "outbound": directTag})
 	}
 
-	b.buildDNS()
+	b.buildDNS(sections)
 
 	if sections {
 		// Section tags are reserved first so node names cannot take them.
@@ -206,7 +206,7 @@ func (b *builder) uniqueTag(base string) string {
 	return tag
 }
 
-func (b *builder) buildDNS() {
+func (b *builder) buildDNS(sections bool) {
 	cfg, c := b.cfg, b.c
 	for i, server := range cfg.Settings.DNSServers {
 		c.DNS.Servers = append(c.DNS.Servers, dnsServer(fmt.Sprintf("dns-server-%d", i), server, cfg.Settings.DNSType))
@@ -230,6 +230,11 @@ func (b *builder) buildDNS() {
 		}
 	}
 	c.Route.DefaultDomainResolver = resolver
+	// DNS sections emit their own servers and rules; they must precede the
+	// global FakeIP catch-all rule below so their domains are not swallowed.
+	if sections {
+		b.buildDNSSections()
+	}
 	for i := range c.DNS.Servers {
 		if s := &c.DNS.Servers[i]; s.Server != "" && net.ParseIP(s.Server) == nil {
 			s.DomainResolver = resolver
@@ -246,6 +251,112 @@ func (b *builder) buildDNS() {
 		})
 		c.DNS.Rules = append(c.DNS.Rules, DNSRule{QueryType: []string{"A", "AAAA"}, Server: "fakeip"})
 	}
+}
+
+// buildDNSSections emits the DNS servers and rules of sections whose action is
+// "dns": their matched domains resolve through their own servers. The first
+// server is the primary and the rest are fallbacks, tried in order.
+//
+// With one server the query is routed straight to it. With two or more, each
+// server is queried by an "evaluate" rule (they launch in parallel and do not
+// return a response on their own); a following "respond" rule with a
+// match_response tag and response_rcode returns the response of the first
+// server that succeeded (NOERROR) or answered NXDOMAIN, falling through to the
+// next server when the previous one failed. This is sing-box 1.14.0+.
+func (b *builder) buildDNSSections() {
+	resolver := b.c.Route.DefaultDomainResolver
+	for _, sec := range b.cfg.Sections {
+		if !sec.Enabled || sec.Action != config.ActionTypeDNS {
+			continue
+		}
+		servers := clean(sec.DNSServers)
+		if len(servers) == 0 {
+			continue
+		}
+		typ := firstNonEmpty(sec.DNSType, b.cfg.Settings.DNSType)
+		tags := make([]string, 0, len(servers))
+		for i, s := range servers {
+			tag := fmt.Sprintf("dns-%s-%d", sec.Name, i)
+			srv := dnsServer(tag, s, typ)
+			if srv.Server != "" && net.ParseIP(srv.Server) == nil && resolver != "" {
+				srv.DomainResolver = resolver
+			}
+			b.c.DNS.Servers = append(b.c.DNS.Servers, srv)
+			tags = append(tags, tag)
+		}
+		matchers := b.dnsSectionMatchers(sec)
+		if len(matchers) == 0 {
+			b.warn("section %q (dns) has no domains, lists or rule sets: no DNS queries are routed to it", sec.Name)
+			continue
+		}
+		for _, m := range matchers {
+			if len(tags) == 1 {
+				r := dnsRuleFromMatcher(m)
+				r.Action = "route"
+				r.Server = tags[0]
+				b.c.DNS.Rules = append(b.c.DNS.Rules, r)
+				continue
+			}
+			evalTags := make([]string, 0, len(tags))
+			for i, tag := range tags {
+				evalTag := fmt.Sprintf("dns-%s-%d-eval", sec.Name, i)
+				evalTags = append(evalTags, evalTag)
+				r := dnsRuleFromMatcher(m)
+				r.Action = "evaluate"
+				r.Server = tag
+				r.Tag = evalTag
+				b.c.DNS.Rules = append(b.c.DNS.Rules, r)
+			}
+			for _, evalTag := range evalTags {
+				for _, rcode := range []string{"NOERROR", "NXDOMAIN"} {
+					r := dnsRuleFromMatcher(m)
+					r.Action = "respond"
+					r.MatchResponse = evalTag
+					r.ResponseRcode = rcode
+					b.c.DNS.Rules = append(b.c.DNS.Rules, r)
+				}
+			}
+		}
+	}
+}
+
+// dnsSectionMatchers collects the routing rules that describe which queries a
+// DNS section answers, from its inline domains, community lists and rule sets.
+func (b *builder) dnsSectionMatchers(sec config.Section) []Rule {
+	var rules []Rule
+	rules = append(rules, inlineDomainRules(sec.Domains)...)
+	for _, name := range sec.CommunityLists {
+		rules = append(rules, b.listRules(name)...)
+	}
+	for _, name := range append(append([]string(nil), sec.RuleSet...), sec.RuleSetWithSubnets...) {
+		rules = append(rules, b.listRules(name)...)
+	}
+	return rules
+}
+
+// dnsRuleFromMatcher copies the domain matchers of a routing Rule into a
+// DNSRule, so a DNS section answers the same domains as a routing section.
+func dnsRuleFromMatcher(r Rule) DNSRule {
+	d := DNSRule{}
+	if v, ok := r["domain"].([]string); ok {
+		d.Domain = v
+	}
+	if v, ok := r["domain_suffix"].([]string); ok {
+		d.DomainSuffix = v
+	}
+	if v, ok := r["domain_keyword"].([]string); ok {
+		d.DomainKeyword = v
+	}
+	if v, ok := r["domain_regex"].([]string); ok {
+		d.DomainRegex = v
+	}
+	if v, ok := r["rule_set"].([]string); ok {
+		d.RuleSet = v
+	}
+	if v, ok := r["invert"].(bool); ok {
+		d.Invert = v
+	}
+	return d
 }
 
 // dnsServer converts "1.1.1.1", "1.1.1.1:5353", "[2606:4700::1111]",
@@ -293,6 +404,10 @@ func (b *builder) buildSection(sec config.Section) {
 		target = rejectTag
 	case config.ActionTypeBypass:
 		target = directTag
+	case config.ActionTypeDNS:
+		// DNS sections resolve their matched domains through dedicated DNS
+		// servers (handled by buildDNSSections); they add no routing outbound.
+		return
 	default:
 		provider := sec.Provider
 		if provider == "" || provider == config.ProviderTypeAuto {

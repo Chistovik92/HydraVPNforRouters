@@ -13,7 +13,7 @@ import (
 func coreNodes(cfg *config.Config, subs singbox.NodeSource) []cores.Node {
 	var out []cores.Node
 	for _, sec := range cfg.Sections {
-		if !sec.Enabled || sec.Action == config.ActionTypeBlock || sec.Action == config.ActionTypeBypass {
+		if !sec.Enabled || sec.Action == config.ActionTypeBlock || sec.Action == config.ActionTypeBypass || sec.Action == config.ActionTypeDNS {
 			continue
 		}
 		if p := sec.Provider; p != "" && p != config.ProviderTypeSingBox && p != config.ProviderTypeAuto {

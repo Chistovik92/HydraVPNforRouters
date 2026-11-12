@@ -57,6 +57,10 @@ const (
 	ActionTypeConnection ActionType = "connection"
 	ActionTypeBypass     ActionType = "bypass"
 	ActionTypeBlock      ActionType = "block"
+	// ActionTypeDNS resolves the section's matched domains through dedicated
+	// DNS servers (dns_servers) instead of the global ones. It does not route
+	// connections; it only picks which DNS server answers the queries.
+	ActionTypeDNS ActionType = "dns"
 )
 
 // RoutingMode represents routing behavior
@@ -190,6 +194,15 @@ type Section struct {
 	// regexp:^ads?\d+\., subnets.
 	Domains       []string `yaml:"domains" json:"domains"`
 	OutboundJsons []string `yaml:"outbound_jsons" json:"outbound_jsons"`
+
+	// DNSServers is used by sections with action "dns": the matched domains
+	// resolve through these servers instead of settings.dns_server. Each entry
+	// uses the same syntax as settings.dns_server; the first is the primary
+	// and the rest are fallbacks tried in order.
+	DNSServers []string `yaml:"dns_servers" json:"dns_servers"`
+	// DNSType is the default scheme for DNSServers entries that have none
+	// (udp, tcp, tls, https). Empty falls back to settings.dns_type.
+	DNSType string `yaml:"dns_type" json:"dns_type"`
 }
 
 // SectionInterface represents an interface bound to a section
@@ -482,9 +495,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("section %q: unknown provider %q", sec.Name, sec.Provider)
 		}
 		switch sec.Action {
-		case "", ActionTypeConnection, ActionTypeBypass, ActionTypeBlock:
+		case "", ActionTypeConnection, ActionTypeBypass, ActionTypeBlock, ActionTypeDNS:
 		default:
 			return fmt.Errorf("section %q: unknown action %q", sec.Name, sec.Action)
+		}
+		if sec.Action == ActionTypeDNS && len(sec.DNSServers) == 0 {
+			return fmt.Errorf("section %q: action %q requires dns_servers", sec.Name, ActionTypeDNS)
 		}
 	}
 	for _, sub := range c.SubscriptionURLs {

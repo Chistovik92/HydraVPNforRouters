@@ -479,3 +479,130 @@ func TestCoreNodesReachTheirCore(t *testing.T) {
 		t.Errorf("no socks outbound for the xray node: %v", c.Outbounds)
 	}
 }
+
+func TestDNSSectionsRouteMatchedDomains(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Settings.DNSServers = []string{"77.88.8.8", "77.88.8.1"}
+	cfg.Sections = []config.Section{
+		{
+			Name:       "kids",
+			Enabled:    true,
+			Action:     config.ActionTypeDNS,
+			DNSServers: []string{"94.140.14.14", "94.140.15.15"},
+			Domains:    []string{"youtube.com", "full:www.example.org"},
+		},
+		{
+			Name:       "single",
+			Enabled:    true,
+			Action:     config.ActionTypeDNS,
+			DNSServers: []string{"9.9.9.9"},
+			Domains:    []string{"example.net"},
+		},
+	}
+
+	c := ConfigFromSettings(cfg, testNodes(t))
+	out := render(t, c)
+
+	dns, ok := out["dns"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("no dns section in %v", out)
+	}
+	servers := dns["servers"].([]interface{})
+	rules := dns["rules"].([]interface{})
+
+	serverTags := map[string]bool{}
+	for _, s := range servers {
+		serverTags[s.(map[string]interface{})["tag"].(string)] = true
+	}
+	for _, tag := range []string{"dns-kids-0", "dns-kids-1", "dns-single-0"} {
+		if !serverTags[tag] {
+			t.Fatalf("missing DNS server %q, have %v", tag, serverTags)
+		}
+	}
+
+	// Collect the DNS rules that carry the kids section's domain matchers.
+	type rule struct {
+		action, server, tag, matchResponse, rcode string
+		domainSuffix                              []string
+	}
+	var kids []rule
+	for _, raw := range rules {
+		m := raw.(map[string]interface{})
+		ds, _ := m["domain_suffix"].([]interface{})
+		var suffix []string
+		for _, v := range ds {
+			if s, ok := v.(string); ok {
+				suffix = append(suffix, s)
+			}
+		}
+		if len(suffix) == 0 || suffix[0] != "youtube.com" {
+			continue
+		}
+		kids = append(kids, rule{
+			action:        str(m["action"]),
+			server:        str(m["server"]),
+			tag:           str(m["tag"]),
+			matchResponse: str(m["match_response"]),
+			rcode:         str(m["response_rcode"]),
+			domainSuffix:  suffix,
+		})
+	}
+
+	// Two servers: evaluate each in parallel, then respond to the first that
+	// answered NOERROR or NXDOMAIN, falling back in order.
+	var evals []rule
+	var responds []rule
+	for _, r := range kids {
+		switch r.action {
+		case "evaluate":
+			evals = append(evals, r)
+		case "respond":
+			responds = append(responds, r)
+		}
+	}
+	if len(evals) != 2 {
+		t.Fatalf("want 2 evaluate rules, got %d: %v", len(evals), kids)
+	}
+	if evals[0].server != "dns-kids-0" || evals[0].tag != "dns-kids-0-eval" {
+		t.Errorf("primary evaluate = %+v, want server dns-kids-0 tag dns-kids-0-eval", evals[0])
+	}
+	if evals[1].server != "dns-kids-1" || evals[1].tag != "dns-kids-1-eval" {
+		t.Errorf("fallback evaluate = %+v, want server dns-kids-1 tag dns-kids-1-eval", evals[1])
+	}
+	if len(responds) != 4 {
+		t.Fatalf("want 4 respond rules (2 servers x NOERROR/NXDOMAIN), got %d: %v", len(responds), kids)
+	}
+	want := [][2]string{
+		{"dns-kids-0-eval", "NOERROR"},
+		{"dns-kids-0-eval", "NXDOMAIN"},
+		{"dns-kids-1-eval", "NOERROR"},
+		{"dns-kids-1-eval", "NXDOMAIN"},
+	}
+	for i, w := range want {
+		if responds[i].matchResponse != w[0] || responds[i].rcode != w[1] {
+			t.Errorf("respond[%d] = %+v, want match_response %s response_rcode %s", i, responds[i], w[0], w[1])
+		}
+	}
+
+	// A single server is routed directly.
+	var single bool
+	for _, raw := range rules {
+		m := raw.(map[string]interface{})
+		ds, _ := m["domain_suffix"].([]interface{})
+		if len(ds) == 1 && ds[0] == "example.net" {
+			single = true
+			if str(m["action"]) != "route" || str(m["server"]) != "dns-single-0" {
+				t.Errorf("single-server rule = %v, want action route server dns-single-0", m)
+			}
+		}
+	}
+	if !single {
+		t.Errorf("no route rule for the single-server DNS section: %v", rules)
+	}
+}
+
+// str reads a JSON string field that may be nil.
+func str(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}

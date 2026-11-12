@@ -98,6 +98,26 @@ type DNSRule struct {
 	QueryType []string `json:"query_type,omitempty"`
 	Server    string   `json:"server,omitempty"`
 	Action    string   `json:"action,omitempty"`
+	// Tag labels the response of an "evaluate" action so a later "respond"
+	// rule can match it via MatchResponse (sing-box 1.14.0+).
+	Tag string `json:"tag,omitempty"`
+	// MatchResponse is the tag of a preceding "evaluate" action: the rule then
+	// matches against that evaluated response instead of the original query.
+	// Marshals as a string tag; combine with ResponseRcode.
+	MatchResponse string `json:"match_response,omitempty"`
+	// ResponseRcode restricts a match_response rule to responses with this
+	// rcode (NOERROR, NXDOMAIN, SERVFAIL, ...).
+	ResponseRcode string `json:"response_rcode,omitempty"`
+
+	// Matchers, mirroring the routing-rule matchers (see Rule). ip_cidr is not
+	// copied: for DNS rules it is a response filter (needs match_response), not
+	// a query matcher, and geosite was removed in sing-box 1.12.
+	Domain        []string `json:"domain,omitempty"`
+	DomainSuffix  []string `json:"domain_suffix,omitempty"`
+	DomainKeyword []string `json:"domain_keyword,omitempty"`
+	DomainRegex   []string `json:"domain_regex,omitempty"`
+	RuleSet       []string `json:"rule_set,omitempty"`
+	Invert        bool     `json:"invert,omitempty"`
 }
 
 // ExperimentalConfig represents experimental features

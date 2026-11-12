@@ -2,13 +2,14 @@
 
 ## 1.3.2
 
-Engines updated to the current upstream releases (`scripts/check-upstream.sh` reported three newer ones).
+Engines updated to the current upstream releases (`scripts/check-upstream.sh` reported three newer ones), plus DNS sections with fallback.
 
 - **sing-box 1.14.4** (was 1.14.3): fixes and improvements upstream, no format changes. The generated config is accepted by `sing-box check` of 1.14.4 (`hydravpn-router selftest`). The container image pins `sing-box:v1.14.4`.
 - **Xray-core 26.10.21** (was 26.10.10): a security update upstream. 26.10.10 and 26.10.17 shipped root certificates whose keys were broken and were withdrawn; 26.10.21 removes them and is built with Go 1.27.3. Update the Xray core on routers (`core install xray latest` or the app).
 - **zapret2 1.0.6** (was 1.0.5.2): QUIC/TLS dissection fixes, `?` and `#` end a domain in URLs, nfqws2 caps the TCP window-scale factor at 14, blockcheck2 improvements. The launch parameters used by the service did not change.
 - Unchanged and already the latest: zapret 72.13, ByeDPI 0.17.3, amneziawg-go 3.1.20260828, **OpenFlux 0.13.0** (the `core-openflux-linux-*` assets are built from tag v0.13.0 by `scripts/build-cores.sh` and published with every release).
-- Not verified on a router: the new engine versions were checked against the generated config and the unit tests, not on hardware.
+- **DNS sections with fallback** (`action: "dns"`): a section's matched domains resolve through its own `dns_servers` instead of `settings.dns_server`. The first server is the primary and the rest are fallbacks, tried in order; NXDOMAIN counts as an answer, a failed server is skipped. A single server routes directly. Requires sing-box 1.14.0+ (on Keenetic this is the `sing-box-go` package). New section fields: `dns_servers`, `dns_type`; the `dns` action is reported in `/api/v1/capabilities`.
+- Not verified on a router: the new engine versions and the DNS fallback were checked against the generated config (`sing-box check` 1.14.4) and the unit tests, not on hardware.
 
 ## 1.3.1
 
