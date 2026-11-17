@@ -118,7 +118,7 @@ func build(cfg *config.Config, nodes NodeSource, o options, sections, servers bo
 	// A single tproxy inbound; the firewall redirects LAN traffic to it.
 	c.Inbounds = []Inbound{
 		{"type": "tproxy", "tag": "tproxy-in", "listen": tproxyListen(cfg), "listen_port": config.TProxyPort},
-		{"type": "direct", "tag": "dns-in", "listen": config.DNSListenAddress, "listen_port": 53},
+		{"type": "dns", "tag": "dns-in", "listen": config.DNSListenAddress, "listen_port": 53},
 		{"type": "mixed", "tag": "service-mixed-in", "listen": "127.0.0.1", "listen_port": config.MixedProxyPort},
 	}
 	c.Outbounds = []Outbound{{"type": "direct", "tag": directTag}}

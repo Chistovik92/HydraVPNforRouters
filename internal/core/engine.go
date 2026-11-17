@@ -157,7 +157,7 @@ func (e *Engine) Start() error {
 	e.setState(EngineStateRunning)
 	go e.applySubscriptionUpdates(e.ctx)
 	e.log("info", "HydraVPN for Router started successfully")
-	return nil
+		return nil
 }
 
 func (e *Engine) startComponents() error {
@@ -171,7 +171,7 @@ func (e *Engine) startComponents() error {
 		return fmt.Errorf("failed to start DNS manager: %w", err)
 	}
 	e.firewallManager.SetNFQueue(e.nfqueueOptions())
-	if err := e.firewallManager.Start(e.ctx); err != nil {
+	if err := e.ensureFirewallState(); err != nil {
 		return fmt.Errorf("failed to start firewall manager: %w", err)
 	}
 	if err := e.subscriptionMgr.Start(e.ctx); err != nil {
@@ -183,7 +183,7 @@ func (e *Engine) startComponents() error {
 	e.applyDNSRedirect()
 	e.startWANMonitor()
 	e.comps.Start(e.ctx)
-	return nil
+		return nil
 }
 
 // applySubscriptionUpdates re-renders the sing-box config whenever the set of
@@ -209,6 +209,10 @@ func (e *Engine) applySubscriptionUpdates(ctx context.Context) {
 				e.recordError(err)
 			} else {
 				e.log("info", "sing-box configuration updated from subscriptions")
+				if err := e.ensureFirewallState(); err != nil {
+					e.log("error", "Failed to update firewall state: "+err.Error())
+					e.recordError(err)
+				}
 			}
 		}
 		e.mu.Unlock()
@@ -288,7 +292,7 @@ func (e *Engine) RefreshCores() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.GetState() != EngineStateRunning {
-		return nil
+			return nil
 	}
 	return e.singboxProvider.Reload(e.singboxConfig())
 }
@@ -304,7 +308,7 @@ func (e *Engine) stopComponents() {
 	}
 	e.listsMgr.Stop()
 	e.subscriptionMgr.Stop()
-	e.firewallManager.Stop()
+		e.firewallManager.Stop()
 	e.dnsManager.Stop()
 	e.stopProviders()
 }
@@ -315,7 +319,7 @@ func (e *Engine) Stop() error {
 	defer e.mu.Unlock()
 
 	if st := e.GetState(); st == EngineStateStopped || st == EngineStateStopping {
-		return nil
+			return nil
 	}
 
 	e.setState(EngineStateStopping)
@@ -328,7 +332,7 @@ func (e *Engine) Stop() error {
 
 	e.setState(EngineStateStopped)
 	e.log("info", "HydraVPN for Router stopped")
-	return nil
+		return nil
 }
 
 // Reload applies a new configuration
@@ -382,7 +386,7 @@ func (e *Engine) Reload(newConfig *config.Config) error {
 		note("providers", e.reloadProviders())
 	}
 	e.firewallManager.SetNFQueue(e.nfqueueOptions())
-	note("firewall", e.firewallManager.Reload(newConfig))
+	note("firewall", e.ensureFirewallState())
 
 	e.lastReload = time.Now()
 	e.reloadCount++
@@ -396,6 +400,38 @@ func (e *Engine) GetState() EngineState {
 	defer e.stateMu.RUnlock()
 	return e.state
 }
+
+// hasActiveSectionsWithNodes returns true if there is at least one enabled
+// section with action "connection" that has subscription nodes (outbounds).
+func (e *Engine) hasActiveSectionsWithNodes() bool {
+	if e.config == nil {
+		return false
+	}
+	for _, sec := range e.config.Sections {
+		if !sec.Enabled || sec.Action != config.ActionTypeConnection {
+			continue
+		}
+		if len(e.subscriptionMgr.GetOutbounds(sec.Name)) > 0 {
+			return true
+		}
+		if len(sec.OutboundJsons) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureFirewallState starts or stops the firewall manager depending on
+// whether there are active sections with nodes.
+func (e *Engine) ensureFirewallState() error {
+	shouldRun := e.hasActiveSectionsWithNodes()
+	if shouldRun {
+		return e.firewallManager.Start(e.ctx)
+	}
+	e.firewallManager.Stop()
+	return nil
+}
+
 
 // GetStatus returns detailed status information. While a start, stop or
 // reload holds the engine lock it returns the last snapshot marked "busy"
@@ -499,7 +535,7 @@ func (e *Engine) zapretEnabled() bool {
 // nfqueueOptions returns the firewall queue settings for nfqws, or nil.
 func (e *Engine) nfqueueOptions() *firewall.NFQueueOptions {
 	if e.zapretProvider == nil {
-		return nil
+			return nil
 	}
 	return &firewall.NFQueueOptions{
 		QueueNum:   e.zapretProvider.QueueNum(),
@@ -523,7 +559,7 @@ func (e *Engine) startProviders() error {
 			return fmt.Errorf("byedpi: %w", err)
 		}
 	}
-	return nil
+		return nil
 }
 
 func (e *Engine) stopProviders() {
@@ -575,7 +611,7 @@ func (e *Engine) reloadProviders() error {
 			return fmt.Errorf("byedpi: %w", err)
 		}
 	}
-	return nil
+		return nil
 }
 
 // ExecuteCommand executes a CLI command
