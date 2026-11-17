@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.2
+## 1.3.3
 
 Engines updated to the current upstream releases (`scripts/check-upstream.sh` reported three newer ones), plus DNS sections with fallback.
 
